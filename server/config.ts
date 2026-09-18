@@ -13,7 +13,7 @@ export function loadConfig(file) {
   const imageHasPreset = Boolean(config.image?.default_preset);
   const defaults = {
     server: { listen: '127.0.0.1:8080' }, worker: { count: 2 },
-    image: { default_preset: 'draft', moderation: 'auto', draft: { quality: 'low', aspect_ratio: '1:1' }, standard: { quality: 'medium', aspect_ratio: '1:1' }, high: { quality: 'high', aspect_ratio: '1:1' } },
+    image: { default_preset: 'draft', moderation: 'auto', draft: { quality: 'low', aspect_ratio: '3:2' }, standard: { quality: 'medium', aspect_ratio: '3:2' }, high: { quality: 'high', aspect_ratio: '3:2' } },
     models: { agent_temperature: 0.75 }, timeouts: { model_ms: 120000, image_ms: 300000 },
     limits: { max_image_retries: 2, max_concurrent_generations: 2, max_daily_generations: 50 }, openrouter: { headers: {} },
   };

@@ -20,8 +20,8 @@ export type Message = {
 }
 
 export type Character = { id: string; name: string; default_card_id?: string; default_card_asset_id?: string }
-export type CharacterCard = { id: string; character_id?: string; output_asset_id?: string; status: string; is_default: boolean; metadata_status: string; metadata?: Record<string, unknown> }
-export type CostLine = { id: string; generation_id?: string; kind: string; model: string; cost: number; created_at: number }
+export type CharacterCard = { id: string; character_id?: string; name?: string; output_asset_id?: string; status: string; is_default: boolean; metadata_status: string; metadata?: Record<string, unknown> }
+export type CostLine = { id: string; generation_id?: string; kind: string; model_name?: string; cost: number; created_at: number }
 export type GenerationUsage = { recorded: boolean; cost: number; total_cost: number; image_cost: number; image_calls: number; image_calls_detail: CostLine[]; llm_cost: number; llm_calls: number; llm_calls_detail: CostLine[]; current_image_cost: number; current_image_recorded: boolean; prompt_tokens: number; completion_tokens: number; total_tokens: number }
 export type Generation = { prompt?: string; model_name?: string; quality_preset?: 'draft' | 'standard' | 'high'; aspect_ratio?: string; usage?: GenerationUsage }
 export type ImageCapabilities = { model: string; aspect_ratios: string[]; source: 'model' | 'fallback' }
@@ -73,13 +73,14 @@ export const api = {
 	listCards: (characterID: string) => request<{ data: CharacterCard[] }>(`/characters/${characterID}/cards`),
 	deleteCard: (characterID: string, cardID: string) => request<void>(`/characters/${characterID}/cards/${cardID}`, { method: 'DELETE' }),
 	setDefaultCard: (characterID: string, cardID: string) => request<{ id: string; is_default: boolean }>(`/characters/${characterID}/cards/${cardID}/default`, { method: 'POST' }),
+	renameCard: (characterID: string, cardID: string, name: string) => request<{ id: string; name: string }>(`/characters/${characterID}/cards/${cardID}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
 	createCard: (characterID: string, sourceAssetIDs: string[], extraRequirements = '', aspectRatio = '3:2') => request<{ id: string }>(`/characters/${characterID}/cards`, { method: 'POST', body: JSON.stringify({ source_asset_ids: sourceAssetIDs, extra_requirements: extraRequirements, aspect_ratio: aspectRatio }) }),
 	retryCard: (characterID: string, cardID: string) => request<{ id: string }>(`/characters/${characterID}/cards/${cardID}/retry`, { method: 'POST' }),
 	previewCard: (characterID: string, baseAssetID: string, originalAssetID: string, requirements: string) => request<{ asset_id: string }>(`/characters/${characterID}/cards/preview`, { method: 'POST', body: JSON.stringify({ base_asset_id: baseAssetID, original_asset_id: originalAssetID, requirements }) }),
   importCard: (characterID: string, assetID: string) => request<{ id: string }>(`/characters/${characterID}/cards/import`, { method: 'POST', body: JSON.stringify({ asset_id: assetID }) }),
   patchSession: (id: string, input: Record<string, string>) => request<void>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   finalizeSession: (id: string, generationID: string) => request<{ status: 'finalized' }>(`/sessions/${id}/finalize`, { method: 'POST', body: JSON.stringify({ generation_id: generationID }) }),
-  getGeneration: (id: string) => request<Generation>(`/generations/${id}`),
+	getGeneration: (id: string) => request<Generation>(`/generations/${id}`, { cache: 'no-store' }),
 	imageCapabilities: () => request<ImageCapabilities>('/image-capabilities'),
   retryGeneration: (id: string) => request(`/generations/${id}/retry`, { method: 'POST' }),
 	adjustFailedGeneration: (id: string, content: string) => request(`/generations/${id}/adjust`, { method: 'POST', body: JSON.stringify({ content }) }),

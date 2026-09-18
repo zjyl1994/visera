@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-	Add, ArrowBack, Collections, DeleteOutline, Download, Face, ImageOutlined, MoreVert, Refresh, Send, Star, StarBorder,
+	Add, ArrowBack, Bookmark, BookmarkBorder, Collections, DeleteOutline, Download, EditOutlined, Face, ImageOutlined, MoreVert, Refresh, Send, StarBorder,
 } from '@mui/icons-material'
 import {
-  Alert, Avatar, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
+  Alert, Avatar, Box, Button, Checkbox, CircularProgress, Dialog, DialogActions, DialogContent,
   DialogContentText, DialogTitle, Divider, IconButton, List, ListItemButton,
-  ListItemText, Menu, MenuItem, Paper, Stack, TextField, Tooltip, Typography,
+  ListItemText, Menu, MenuItem, Paper, Snackbar, Stack, TextField, Tooltip, Typography,
   useMediaQuery, useTheme,
 } from '@mui/material'
 import { api, assetDownloadURL, assetURL, type Character, type CharacterCard, type CostLine, type GalleryItem, type GalleryPage as GalleryPageData, type GenerationUsage, type MemoryCandidate, type Message, type Session } from './api'
@@ -32,6 +32,15 @@ function formatTimestamp(value: number | string | undefined) {
 	const timestamp = Number(value)
 	if (!Number.isFinite(timestamp) || timestamp <= 0) return '时间未记录'
 	return new Date(timestamp < 100_000_000_000 ? timestamp * 1000 : timestamp).toLocaleString('zh-CN')
+}
+
+function cardLabel(card: CharacterCard, index?: number) {
+	if (card.name?.trim()) return card.name.trim()
+	return card.is_default ? '默认角色卡' : index == null ? '角色卡' : `角色卡 ${index + 1}`
+}
+
+function readyCardsFirst(cards: CharacterCard[]) {
+	return cards.filter((card) => card.status === 'ready' && card.output_asset_id).sort((left, right) => Number(right.is_default) - Number(left.is_default))
 }
 
 const imageCapabilityCacheKey = 'visera:image-capabilities:v1'
@@ -107,7 +116,7 @@ export default function App() {
   if (!authenticated) return <LoginScreen onAuthenticated={() => setAuthenticated(true)} />
   return <Box className="app-shell">
     {mobile ? (mainPage !== 'chat' ? content : activeID ? chat : list) : <><Box className="conversation-pane">{list}</Box><Box className="chat-pane">{content}</Box></>}
-    {error && <Alert className="global-alert" severity="error" onClose={() => setError('')}>{error}</Alert>}
+		<Snackbar open={Boolean(error)} autoHideDuration={6000} anchorOrigin={{ vertical: 'top', horizontal: 'center' }} onClose={(_event, reason) => { if (reason !== 'clickaway') setError('') }}><Alert className="global-alert" severity="error" variant="filled" onClose={() => setError('')}>{error}</Alert></Snackbar>
 		<SessionStartDialog open={sessionStartOpen} onClose={() => !sessionStarting && setSessionStartOpen(false)} onSelect={startSession} busy={sessionStarting} onError={setError} />
   </Box>
 }
@@ -131,15 +140,15 @@ function ConversationList({ sessions, activeID, loading, onCreate, onCharacters,
   return <Box className="conversation-list">
     <Stack direction="row" alignItems="center" justifyContent="space-between" className="list-header">
       <Stack direction="row" spacing={1} alignItems="center"><Avatar className="brand-avatar">V</Avatar><Typography variant="h6">Visera</Typography></Stack>
-	  <Stack direction="row"><Tooltip title="作品库"><IconButton color="primary" onClick={onGallery}><Collections /></IconButton></Tooltip><Tooltip title="角色卡库"><IconButton color="primary" onClick={onCharacters}><Face /></IconButton></Tooltip><Tooltip title="新建对话"><IconButton color="primary" onClick={onCreate}><Add /></IconButton></Tooltip></Stack>
+	  <Stack direction="row"><Tooltip title="作品库"><IconButton color="primary" onClick={onGallery}><Collections /></IconButton></Tooltip><Tooltip title="角色卡库"><IconButton color="primary" onClick={onCharacters}><Face /></IconButton></Tooltip></Stack>
     </Stack>
     <Button startIcon={<Add />} variant="contained" fullWidth onClick={onCreate} sx={{ mb: 1.5 }}>新建对话</Button>
     <List disablePadding className="session-list">
       {loading && <Box sx={{ p: 3, textAlign: 'center' }}><CircularProgress size={24} /></Box>}
       {!loading && sessions.length === 0 && <Typography color="text.secondary" sx={{ p: 3, textAlign: 'center' }}>还没有对话，开始创作吧。</Typography>}
       {sessions.map((session) => <ListItemButton key={session.id} selected={session.id === activeID} className="session-row" onClick={() => onSelect(session.id)}>
-        <Avatar sx={{ bgcolor: session.has_running_generation ? 'primary.main' : 'secondary.main' }}>{session.title.slice(0, 1)}</Avatar>
-        <ListItemText primary={session.title} secondary={<Stack className="session-meta" direction="row" spacing={.75} alignItems="center">{session.status === 'finalized' && <Chip className="finalized-chip" size="small" label="已保留" />}<Typography variant="caption" noWrap>{session.status === 'finalized' ? '作品已收入图库' : session.last_message_preview || '等待你的第一条消息'}</Typography></Stack>} primaryTypographyProps={{ noWrap: true }} secondaryTypographyProps={{ component: 'div' }} />
+        <Avatar>{session.title.slice(0, 1)}</Avatar>
+        <ListItemText primary={session.title} secondary={<Stack className="session-meta" direction="row" spacing={.5} alignItems="center">{session.status === 'finalized' && <Bookmark className="finalized-mark" aria-label="已收入作品库" />}<Typography variant="caption" noWrap>{session.status === 'finalized' ? '已收入作品库' : session.last_message_preview || '等待你的第一条消息'}</Typography></Stack>} primaryTypographyProps={{ noWrap: true }} secondaryTypographyProps={{ component: 'div' }} />
         <IconButton size="small" onClick={(event) => { event.stopPropagation(); setTarget(session.id) }}><MoreVert fontSize="small" /></IconButton>
       </ListItemButton>)}
 		</List>
@@ -185,7 +194,7 @@ function Chat({ session, sessionID, messages, onBack, onRefresh, onError }: { se
   return <Box className="chat-view">
     <Stack direction="row" className="chat-header" alignItems="center" spacing={1}>
       {mobile && <IconButton onClick={onBack}><ArrowBack /></IconButton>}
-	  <Avatar>{session?.title.slice(0, 1) || 'V'}</Avatar><Box sx={{ flex: 1, minWidth: 0 }}><Typography noWrap fontWeight={700}>{session?.title || '新对话'}</Typography><Typography variant="caption" color="text.secondary">你的创作空间</Typography></Box>
+	  <Avatar>{session?.title.slice(0, 1) || 'V'}</Avatar><Box sx={{ flex: 1, minWidth: 0 }}><Typography noWrap fontWeight={700}>{session?.title || '新对话'}</Typography><Typography variant="caption" color="text.secondary">角色卡创作对话</Typography></Box>
 		<IconButton onClick={(event) => setMenuAnchor(event.currentTarget)}><MoreVert /></IconButton>
       <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => setMenuAnchor(null)}><MenuItem onClick={() => { onRefresh(); setMenuAnchor(null) }}><Refresh fontSize="small" />&nbsp;刷新对话</MenuItem></Menu>
     </Stack>
@@ -208,7 +217,7 @@ function GenerationProgressWorkspace({ message, status, errorCode, onRefresh, on
 function BriefingWorkspace({ sessionID, phase, messages, plans, questions, onRefresh, onError }: { sessionID: string; phase: string; messages: Message[]; plans: Message[]; questions: Message[]; onRefresh: () => void; onError: (message: string) => void }) {
 	const [idea, setIdea] = useState('')
 	const [busy, setBusy] = useState(false)
-	const [aspectRatio, setAspectRatio] = useState('1:1')
+	const [aspectRatio, setAspectRatio] = useState('3:2')
 	const [aspectRatios, setAspectRatios] = useState(['1:1', '3:2', '2:3', '4:3', '3:4', '16:9', '9:16', '21:9'])
 	useEffect(() => { void api.imageCapabilities().then((result) => { if (result.aspect_ratios.length) { setAspectRatios(result.aspect_ratios); setAspectRatio((current) => result.aspect_ratios.includes(current) ? current : result.aspect_ratios[0]) } }).catch(() => {}) }, [])
 	const unansweredQuestion = questions.at(-1)
@@ -257,7 +266,7 @@ function QuestionCard({ message, onChoose }: { message: Message; onChoose: (valu
 
 function CostBreakdownDialog({ usage, open, onClose }: { usage: GenerationUsage | null; open: boolean; onClose: () => void }) {
 	const label = (kind: string) => ({ scene_direction: '构思画面', scene_brief: '整理灵感', text_agent: '创作协作', text_agent_followup: '完善画面', memory_extraction: '整理角色偏好' }[kind] || kind)
-	const line = (item: CostLine, index: number, group: 'image' | 'llm') => <Stack key={item.id || `${group}-${index}`} direction="row" justifyContent="space-between" spacing={2} sx={{ py: 1, borderBottom: '1px solid', borderColor: 'divider' }}><Box><Typography variant="body2">{group === 'image' ? `画面生成 ${index + 1}` : label(item.kind)}</Typography><Typography variant="caption" color="text.secondary">{item.model || '服务信息暂不可用'} · {formatTimestamp(item.created_at)}</Typography></Box><Typography variant="body2">${Number(item.cost || 0).toFixed(4)}</Typography></Stack>
+	const line = (item: CostLine, index: number, group: 'image' | 'llm') => <Stack key={item.id || `${group}-${index}`} direction="row" justifyContent="space-between" spacing={2} sx={{ py: 1, borderBottom: '1px solid', borderColor: 'divider' }}><Box><Typography variant="body2">{group === 'image' ? `画面生成 ${index + 1}` : label(item.kind)}</Typography><Typography variant="caption" color="text.secondary">{item.model_name || '服务信息暂不可用'} · {formatTimestamp(item.created_at)}</Typography></Box><Typography variant="body2">${Number(item.cost || 0).toFixed(4)}</Typography></Stack>
 	return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm"><DialogTitle>本次创作费用</DialogTitle><DialogContent><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>费用包含画面生成和本次创作协作。</Typography><Paper variant="outlined" sx={{ p: 1.5, mb: 2, bgcolor: 'action.hover' }}><Stack direction="row" justifyContent="space-between"><Typography fontWeight={700}>合计</Typography><Typography fontWeight={700}>${Number(usage?.total_cost || 0).toFixed(4)}</Typography></Stack><Typography variant="caption" color="text.secondary">画面生成 ${Number(usage?.image_cost || 0).toFixed(4)} · 创作协作 ${Number(usage?.llm_cost || 0).toFixed(4)}</Typography></Paper><Typography variant="subtitle2">生成画面（{usage?.image_calls || 0} 次）</Typography>{usage?.image_calls_detail?.length ? usage?.image_calls_detail.map((item, index) => line(item, index, 'image')) : <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>费用信息暂不可用。</Typography>}<Typography variant="subtitle2" sx={{ mt: 2 }}>创作协作（{usage?.llm_calls || 0} 次）</Typography>{usage?.llm_calls_detail?.length ? usage.llm_calls_detail.map((item, index) => line(item, index, 'llm')) : <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>暂无可显示的费用信息。</Typography>}</DialogContent><DialogActions><Button onClick={onClose}>关闭</Button></DialogActions></Dialog>
 }
 
@@ -274,7 +283,15 @@ function StudioWorkspace({ session, generation, plans, messages, onRefresh, onEr
 	const finalized = session?.status === 'finalized'
 	useEffect(() => { if (session?.character_id) void api.listMemoryCandidates(session.character_id).then((result) => setCandidates(result.data)).catch(() => setCandidates([])) }, [session?.character_id, messages.length])
 	useEffect(() => { if (!session?.character_id) return; void api.listCards(session.character_id).then((result) => setCardAsset(result.data.find((card) => card.id === session.character_card_id)?.output_asset_id || '')).catch(() => setCardAsset('')) }, [session?.character_id, session?.character_card_id])
-	useEffect(() => { setAspectRatio(generation.aspectRatio || null); void api.getGeneration(generation.id).then((result) => { setQuality(result.quality_preset || 'draft'); setAspectRatio(result.aspect_ratio || generation.aspectRatio || null); setUsage(result.usage?.recorded ? result.usage : null); return cachedImageCapabilities(result.model_name).then((value) => setAspectRatios(value.aspect_ratios)) }).catch(() => { setQuality('draft'); setUsage(null) }) }, [generation.id, generation.aspectRatio])
+	useEffect(() => {
+		setAspectRatio(generation.aspectRatio || null)
+		void api.getGeneration(generation.id).then((result) => {
+			setQuality(result.quality_preset || 'draft')
+			setAspectRatio(result.aspect_ratio || generation.aspectRatio || null)
+			setUsage(result.usage?.recorded ? result.usage : null)
+			void cachedImageCapabilities(result.model_name).then((value) => setAspectRatios(value.aspect_ratios)).catch(() => {})
+		}).catch(() => { setQuality('draft'); setUsage(null) })
+	}, [generation.id, generation.aspectRatio])
 	const revise = async () => { if (finalized || !feedback.trim() || busy) return; setBusy(true); try { await api.feedback(generation.id, feedback, 'draft', aspectRatio ?? undefined); setFeedback(''); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) } }
 	const resolve = async (id: string, action: 'accept' | 'reject') => { try { await api.resolveMemoryCandidate(id, action); setCandidates((items) => items.filter((item) => item.id !== id)); onRefresh() } catch (err) { onError(errorMessage(err)) } }
 	const refine = async (target: 'standard' | 'high') => { if (finalized || busy) return; setBusy(true); try { await api.refineGeneration(generation.id, target); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) } }
@@ -304,7 +321,23 @@ function MessageBubble({ message, sessionID, onRefresh, onError }: { message: Me
 	}
 	useEffect(() => {
 		if (message.kind !== 'generation' || !messageGenerationID) return
-	void api.getGeneration(messageGenerationID).then((result) => { setUsage(result.usage ? { recorded: result.usage.recorded, cost: result.usage.cost } : null); setPrompt(result.prompt || '') }).catch(() => setUsage(null))
+		let cancelled = false
+		let retryTimer: number | undefined
+		const load = async (attempt = 0) => {
+			try {
+				const result = await api.getGeneration(messageGenerationID)
+				if (cancelled) return
+				setUsage(result.usage ? { recorded: result.usage.recorded, cost: result.usage.cost } : null)
+				setPrompt(result.prompt || '')
+				if (!result.usage?.recorded && attempt < 5) retryTimer = window.setTimeout(() => void load(attempt + 1), 800)
+			} catch {
+				if (cancelled) return
+				if (attempt < 2) retryTimer = window.setTimeout(() => void load(attempt + 1), 800)
+				else setUsage(null)
+			}
+		}
+		void load()
+		return () => { cancelled = true; if (retryTimer) window.clearTimeout(retryTimer) }
 	}, [message.kind, messageGenerationID, messageGenerationStatus])
   if (message.kind === 'reference') {
     const assetID = String(content.asset_id || message.asset_id || '')
@@ -318,7 +351,7 @@ function MessageBubble({ message, sessionID, onRefresh, onError }: { message: Me
     const generationID = messageGenerationID
 		const save = async () => { if (saving || saved) return; setSaving(true); try { await api.saveToGallery(generationID); setSaved(true) } catch (err) { onError(errorMessage(err)) } finally { setSaving(false) } }
 		const retry = async () => { if (retrying) return; setRetrying(true); try { await api.retryGeneration(generationID); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setRetrying(false) } }
-		return <><Box className="bubble-line"><Paper className="bubble generation-bubble"><Stack spacing={1}><Stack direction="row" spacing={1} alignItems="center">{status !== 'succeeded' && status !== 'failed' && <CircularProgress size={18} />}<Typography fontWeight={700}>{status === 'succeeded' ? '画面准备好了' : status === 'failed' ? '这次没能完成' : status === 'running' ? '正在描绘画面…' : '正在准备画面…'}</Typography></Stack>{assetID && <Box className="generation-media"><img className="previewable-image" onClick={() => setPreviewOpen(true)} src={assetURL(assetID)} />{status === 'succeeded' && <Tooltip title={saved ? '已加入作品库' : saving ? '正在加入作品库…' : '加入作品库'}><span><IconButton className="gallery-star" color={saved ? 'warning' : 'default'} disabled={saved || saving} onClick={() => void save()}>{saving ? <CircularProgress size={18} /> : saved ? <Star /> : <StarBorder />}</IconButton></span></Tooltip>}</Box>}{status === 'succeeded' && <Typography variant="caption" color="text.secondary">点击画面查看大图和画面说明。{usage?.recorded ? ` 本次创作费用：$${usage.cost.toFixed(4)}` : ' 费用信息暂不可用'}</Typography>}{status === 'failed' && <Button size="small" startIcon={retrying ? <CircularProgress size={16} /> : <Refresh />} disabled={retrying} onClick={() => void retry()}>{retrying ? '正在重试…' : '再试一次'}</Button>}</Stack></Paper></Box><Dialog open={previewOpen} onClose={() => setPreviewOpen(false)} fullWidth maxWidth="md"><DialogTitle>画面说明</DialogTitle><DialogContent><Stack spacing={2}>{assetID && <img className="preview-image" src={assetURL(assetID)} />}<Typography variant="subtitle2">创作时的画面说明</Typography><Paper variant="outlined" className="prompt-view"><Typography component="pre" variant="body2">{prompt || '正在读取画面说明…'}</Typography></Paper></Stack></DialogContent><DialogActions><Button onClick={() => setPreviewOpen(false)}>关闭</Button></DialogActions></Dialog></>
+		return <><Box className="bubble-line"><Paper className="bubble generation-bubble"><Stack spacing={1}><Stack direction="row" spacing={1} alignItems="center">{status !== 'succeeded' && status !== 'failed' && <CircularProgress size={18} />}<Typography fontWeight={700}>{status === 'succeeded' ? '画面准备好了' : status === 'failed' ? '这次没能完成' : status === 'running' ? '正在描绘画面…' : '正在准备画面…'}</Typography></Stack>{assetID && <Box className="generation-media"><img className="previewable-image" onClick={() => setPreviewOpen(true)} src={assetURL(assetID)} />{status === 'succeeded' && <Tooltip title={saved ? '已加入作品库' : saving ? '正在加入作品库…' : '加入作品库'}><span><IconButton className="gallery-star" color={saved ? 'primary' : 'default'} disabled={saved || saving} onClick={() => void save()}>{saving ? <CircularProgress size={18} /> : saved ? <Bookmark /> : <BookmarkBorder />}</IconButton></span></Tooltip>}</Box>}{status === 'succeeded' && <Typography variant="caption" color="text.secondary">点击画面查看大图和画面说明。{usage?.recorded ? ` 本次创作费用：$${usage.cost.toFixed(4)}` : ' 费用信息暂不可用'}</Typography>}{status === 'failed' && <Button size="small" startIcon={retrying ? <CircularProgress size={16} /> : <Refresh />} disabled={retrying} onClick={() => void retry()}>{retrying ? '正在重试…' : '再试一次'}</Button>}</Stack></Paper></Box><Dialog open={previewOpen} onClose={() => setPreviewOpen(false)} fullWidth maxWidth="md"><DialogTitle>画面说明</DialogTitle><DialogContent><Stack spacing={2}>{assetID && <img className="preview-image" src={assetURL(assetID)} />}<Typography variant="subtitle2">创作时的画面说明</Typography><Paper variant="outlined" className="prompt-view"><Typography component="pre" variant="body2">{prompt || '正在读取画面说明…'}</Typography></Paper></Stack></DialogContent><DialogActions><Button onClick={() => setPreviewOpen(false)}>关闭</Button></DialogActions></Dialog></>
   }
   if (message.kind === 'question') {
     const options = Array.isArray(content.options) ? content.options.map((option) => typeof option === 'object' && option ? option as { id?: string; label?: string; description?: string } : { id: String(option), label: String(option) }) : []
@@ -332,18 +365,67 @@ function MessageBubble({ message, sessionID, onRefresh, onError }: { message: Me
 }
 
 function SessionStartDialog({ open, onClose, onSelect, busy, onError }: { open: boolean; onClose: () => void; onSelect: (characterID: string, characterCardID: string) => void; busy: boolean; onError: (message: string) => void }) {
+	const mobile = useMediaQuery(useTheme().breakpoints.down('md'))
 	const [characters, setCharacters] = useState<Character[]>([])
+	const [browsedCharacterID, setBrowsedCharacterID] = useState('')
 	const [selectedCharacterID, setSelectedCharacterID] = useState('')
-	const [cards, setCards] = useState<CharacterCard[]>([])
-	useEffect(() => { if (!open) return; setSelectedCharacterID(''); setCards([]); void api.listCharacters().then((result) => setCharacters(result.data)).catch((err) => onError(errorMessage(err))) }, [open, onError])
-	useEffect(() => { if (!selectedCharacterID) { setCards([]); return }; void api.listCards(selectedCharacterID).then((result) => setCards(result.data)).catch((err) => onError(errorMessage(err))) }, [selectedCharacterID])
-	return <Dialog open={open} onClose={() => !busy && onClose()} fullWidth maxWidth="sm"><DialogTitle>选择角色卡后开始对话</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}><Typography variant="body2" color="text.secondary">先选择角色，再选择本次创作要使用的角色卡版本。</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{characters.map((character) => <Button key={character.id} size="small" variant={character.id === selectedCharacterID ? 'contained' : 'outlined'} disabled={busy} onClick={() => setSelectedCharacterID(character.id)}>{character.name}</Button>)}</Stack>{selectedCharacterID && <Stack spacing={1}>{cards.filter((card) => card.status === 'ready' && card.output_asset_id).map((card) => <Button key={card.id} className="character-card-choice" variant={card.is_default ? 'contained' : 'outlined'} disabled={busy} onClick={() => onSelect(selectedCharacterID, card.id)}><PreviewImage assetID={card.output_asset_id!} alt={card.is_default ? '当前默认角色卡' : '角色卡版本'} interactive={false} />{busy ? '正在打开创作空间…' : card.is_default ? '当前默认卡' : '角色卡版本'}</Button>)}</Stack>}{busy && <ThinkingNotice choice="正在为你准备创作空间" />}{characters.length === 0 && <Typography color="text.secondary">还没有角色卡，请先在左上角角色卡库创建或导入。</Typography>}{selectedCharacterID && cards.length === 0 && <Typography color="text.secondary">该角色还没有可用的角色卡。</Typography>}</Stack></DialogContent><DialogActions><Button disabled={busy} onClick={onClose}>取消</Button></DialogActions></Dialog>
+	const [selectedCardID, setSelectedCardID] = useState('')
+	const [cardsByCharacter, setCardsByCharacter] = useState<Record<string, CharacterCard[]>>({})
+	const [loadingCards, setLoadingCards] = useState(false)
+	const [previewCard, setPreviewCard] = useState<{ assetID: string; label: string } | null>(null)
+	useEffect(() => {
+		if (!open) return
+		let cancelled = false
+		setBrowsedCharacterID('')
+		setSelectedCharacterID('')
+		setSelectedCardID('')
+		setPreviewCard(null)
+		setCharacters([])
+		setCardsByCharacter({})
+		setLoadingCards(true)
+		void (async () => {
+			try {
+				const result = await api.listCharacters()
+				const entries = await Promise.all(result.data.map(async (character) => [character.id, (await api.listCards(character.id)).data] as const))
+				if (cancelled) return
+				const nextCardsByCharacter = Object.fromEntries(entries)
+				const initialCharacter = result.data.find((character) => readyCardsFirst(nextCardsByCharacter[character.id] || []).length > 0) || result.data[0]
+				const initialCard = initialCharacter ? readyCardsFirst(nextCardsByCharacter[initialCharacter.id] || [])[0] : undefined
+				setCharacters(result.data)
+				setCardsByCharacter(nextCardsByCharacter)
+				setBrowsedCharacterID(initialCharacter?.id || '')
+				setSelectedCharacterID(initialCard ? initialCharacter.id : '')
+				setSelectedCardID(initialCard?.id || '')
+			} catch (err) {
+				if (!cancelled) onError(errorMessage(err))
+			} finally {
+				if (!cancelled) setLoadingCards(false)
+			}
+		})()
+		return () => { cancelled = true }
+	}, [open, onError])
+	const selectedCharacter = characters.find((character) => character.id === selectedCharacterID)
+	const selectedCard = selectedCharacterID ? cardsByCharacter[selectedCharacterID]?.find((card) => card.id === selectedCardID) : undefined
+	const browseCharacter = (characterID: string) => setBrowsedCharacterID(characterID)
+	const chooseCard = (characterID: string, cardID: string) => { setBrowsedCharacterID(characterID); setSelectedCharacterID(characterID); setSelectedCardID(cardID) }
+	const canCreate = Boolean(selectedCharacterID && selectedCardID && selectedCard?.output_asset_id)
+	const close = () => { if (previewCard) setPreviewCard(null); else onClose() }
+	if (previewCard) return <Dialog open={open} onClose={() => !busy && close()} fullScreen={mobile} fullWidth maxWidth="md" aria-labelledby="character-card-preview-title"><DialogTitle id="character-card-preview-title">{previewCard.label}</DialogTitle><DialogContent className="session-card-preview-dialog"><img src={assetURL(previewCard.assetID)} alt={previewCard.label} /></DialogContent><DialogActions><Button onClick={() => setPreviewCard(null)}>返回选择</Button></DialogActions></Dialog>
+	return <Dialog open={open} onClose={() => !busy && close()} fullScreen={mobile} fullWidth maxWidth="md" aria-labelledby="new-conversation-title"><DialogTitle id="new-conversation-title">新建对话</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}><Typography variant="body2" color="text.secondary">选择这次对话要使用的角色卡；可先预览，再选择并创建对话。</Typography>{loadingCards ? <Stack alignItems="center" spacing={1.5} sx={{ py: 5 }}><CircularProgress /><Typography variant="body2" color="text.secondary">正在载入角色卡…</Typography></Stack> : <>{characters.length === 0 ? <Typography color="text.secondary">还没有角色卡，请先在左上角角色卡库创建或导入。</Typography> : <><Stack className="session-character-tabs" direction="row" spacing={1} aria-label="选择角色" useFlexGap>{characters.map((character) => <Button key={character.id} size="small" variant={character.id === browsedCharacterID ? 'contained' : 'outlined'} aria-pressed={character.id === browsedCharacterID} disabled={busy} onClick={() => browseCharacter(character.id)}>{character.name}</Button>)}</Stack><Box className="session-character-groups">{characters.map((character) => { const readyCards = readyCardsFirst(cardsByCharacter[character.id] || []); return <Box key={character.id} className={`session-character-group ${character.id === browsedCharacterID ? 'is-mobile-active' : ''}`}><Stack direction="row" alignItems="baseline" spacing={1}><Typography variant="subtitle1" fontWeight={700}>{character.name}</Typography><Typography variant="caption" color="text.secondary">{readyCards.length ? `${readyCards.length} 张可用角色卡` : '暂无可用角色卡'}</Typography></Stack>{readyCards.length ? <Box className="session-card-grid">{readyCards.map((card, index) => { const selected = card.id === selectedCardID && character.id === selectedCharacterID; const label = cardLabel(card, index); const previewLabel = `${character.name} · ${label}`; return <Paper key={card.id} className={`session-card-option ${selected ? 'is-selected' : ''}`} variant="outlined"><Button className="session-card-preview" aria-label={`预览 ${previewLabel}`} disabled={busy} onClick={() => setPreviewCard({ assetID: card.output_asset_id!, label: previewLabel })}><img src={assetURL(card.output_asset_id!)} alt="" /></Button><Button className="session-card-select" disabled={busy} aria-pressed={selected} onClick={() => chooseCard(character.id, card.id)}>{label}</Button></Paper> })}</Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>这个角色尚未有已就绪的卡片。</Typography>}</Box> })}</Box></>}{canCreate && <Paper className="session-selection-summary" variant="outlined"><Typography variant="caption" color="text.secondary">即将创建的对话</Typography><Stack direction="row" spacing={1.25} alignItems="center" sx={{ mt: .5 }}>{selectedCard?.output_asset_id && <PreviewImage assetID={selectedCard.output_asset_id} alt="已选角色卡" interactive={false} />}<Typography fontWeight={700}>{selectedCharacter?.name} · {selectedCard && cardLabel(selectedCard)}</Typography></Stack></Paper>}</>}</Stack></DialogContent><DialogActions><Button disabled={busy} onClick={close}>取消</Button><Button variant="contained" disabled={!canCreate || busy || loadingCards} onClick={() => { if (canCreate) onSelect(selectedCharacterID, selectedCardID) }}>{busy ? '正在创建对话…' : '创建对话'}</Button></DialogActions></Dialog>
 }
 
-function CharacterCardVersion({ card, busy, onIterate, onDelete, onSetDefault, onRetry, onError }: { card: CharacterCard; busy: boolean; onIterate: (card: CharacterCard, assetID: string) => Promise<void>; onDelete: (card: CharacterCard) => void; onSetDefault: (card: CharacterCard) => Promise<void>; onRetry: (card: CharacterCard) => Promise<void>; onError: (message: string) => void }) {
+function CharacterCardVersion({ card, busy, onIterate, onDelete, onSetDefault, onRetry, onRename, onError }: { card: CharacterCard; busy: boolean; onIterate: (card: CharacterCard, assetID: string) => Promise<void>; onDelete: (card: CharacterCard) => void; onSetDefault: (card: CharacterCard) => Promise<void>; onRetry: (card: CharacterCard) => Promise<void>; onRename: (card: CharacterCard, name: string) => Promise<void>; onError: (message: string) => void }) {
 	const [deriveOpen, setDeriveOpen] = useState(false)
+	const [renameOpen, setRenameOpen] = useState(false)
 	const status = card.status === 'ready' ? '已就绪' : card.status === 'failed' ? '生成失败' : '生成中'
-	return <><Paper className={`character-version-card ${card.is_default ? 'is-default' : ''}`} variant="outlined">{card.output_asset_id ? <PreviewImage assetID={card.output_asset_id} alt={card.is_default ? '当前默认角色卡' : '角色卡版本'} /> : <Box className="character-card-placeholder">{card.status === 'failed' ? <Typography variant="caption" color="error">生成失败</Typography> : <CircularProgress size={22} />}</Box>}<Box sx={{ p: 1.5 }}><Stack direction="row" justifyContent="space-between" spacing={1} alignItems="center"><Box><Typography variant="subtitle2">{card.is_default ? '当前默认卡' : '角色卡版本'}</Typography><Typography variant="caption" color="text.secondary">{status}</Typography></Box>{!card.is_default && <Stack direction="row" spacing={.25}><Tooltip title="设为默认角色卡"><span><IconButton aria-label="设为默认角色卡" size="small" color="primary" disabled={busy || card.status !== 'ready'} onClick={() => void onSetDefault(card)}><StarBorder fontSize="small" /></IconButton></span></Tooltip><Tooltip title="删除此版本"><span><IconButton aria-label="删除角色卡版本" size="small" color="error" disabled={busy || card.status !== 'ready'} onClick={() => onDelete(card)}><DeleteOutline fontSize="small" /></IconButton></span></Tooltip></Stack>}</Stack>{card.status === 'failed' && <Button fullWidth sx={{ mt: 1.25 }} variant="outlined" disabled={busy} onClick={() => void onRetry(card)}>重试生成</Button>}{card.status === 'ready' && card.output_asset_id && <Button fullWidth sx={{ mt: 1.25 }} variant="outlined" disabled={busy} onClick={() => setDeriveOpen(true)}>{busy ? '正在创建新版本…' : '基于此卡派生新版本…'}</Button>}</Box></Paper><DeriveCardDialog card={card} open={deriveOpen} busy={busy} onClose={() => setDeriveOpen(false)} onError={onError} onCreate={async (assetID) => { await onIterate(card, assetID); setDeriveOpen(false) }} /></>
+	return <><Paper className={`character-version-card ${card.is_default ? 'is-default' : ''}`} variant="outlined">{card.output_asset_id ? <PreviewImage assetID={card.output_asset_id} alt={cardLabel(card)} /> : <Box className="character-card-placeholder">{card.status === 'failed' ? <Typography variant="caption" color="error">生成失败</Typography> : <CircularProgress size={22} />}</Box>}<Box sx={{ p: 1.5 }}><Stack direction="row" justifyContent="space-between" spacing={1} alignItems="center"><Box sx={{ minWidth: 0 }}><Typography variant="subtitle2" noWrap>{cardLabel(card)}</Typography><Typography variant="caption" color="text.secondary">{status}{card.is_default ? ' · 默认角色卡' : ''}</Typography></Box><Stack direction="row" spacing={.25}><Tooltip title="重命名角色卡"><span><IconButton aria-label="重命名角色卡" size="small" disabled={busy} onClick={() => setRenameOpen(true)}><EditOutlined fontSize="small" /></IconButton></span></Tooltip>{!card.is_default && <><Tooltip title="设为默认角色卡"><span><IconButton aria-label="设为默认角色卡" size="small" color="primary" disabled={busy || card.status !== 'ready'} onClick={() => void onSetDefault(card)}><StarBorder fontSize="small" /></IconButton></span></Tooltip><Tooltip title="删除此版本"><span><IconButton aria-label="删除角色卡版本" size="small" color="error" disabled={busy || card.status !== 'ready'} onClick={() => onDelete(card)}><DeleteOutline fontSize="small" /></IconButton></span></Tooltip></>}</Stack></Stack>{card.status === 'failed' && <Button fullWidth sx={{ mt: 1.25 }} variant="outlined" disabled={busy} onClick={() => void onRetry(card)}>重试生成</Button>}{card.status === 'ready' && card.output_asset_id && <Button fullWidth sx={{ mt: 1.25 }} variant="outlined" disabled={busy} onClick={() => setDeriveOpen(true)}>{busy ? '正在创建新版本…' : '基于此卡派生新版本…'}</Button>}</Box></Paper><DeriveCardDialog card={card} open={deriveOpen} busy={busy} onClose={() => setDeriveOpen(false)} onError={onError} onCreate={async (assetID) => { await onIterate(card, assetID); setDeriveOpen(false) }} /><CardRenameDialog card={card} open={renameOpen} busy={busy} onClose={() => setRenameOpen(false)} onSave={onRename} /></>
+}
+
+function CardRenameDialog({ card, open, busy, onClose, onSave }: { card: CharacterCard; open: boolean; busy: boolean; onClose: () => void; onSave: (card: CharacterCard, name: string) => Promise<void> }) {
+	const [name, setName] = useState('')
+	useEffect(() => { if (open) setName(card.name || cardLabel(card)) }, [open, card])
+	const save = async () => { if (!name.trim() || busy) return; await onSave(card, name.trim()); onClose() }
+	return <Dialog open={open} onClose={() => !busy && onClose()} fullWidth maxWidth="xs"><DialogTitle>重命名角色卡</DialogTitle><DialogContent><TextField autoFocus fullWidth label="角色卡名称" value={name} disabled={busy} inputProps={{ maxLength: 100 }} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void save() } }} sx={{ mt: 1 }} /></DialogContent><DialogActions><Button disabled={busy} onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !name.trim()} onClick={() => void save()}>{busy ? '正在保存…' : '保存名称'}</Button></DialogActions></Dialog>
 }
 
 function DeriveCardDialog({ card, open, busy, onClose, onCreate, onError }: { card: CharacterCard | null; open: boolean; busy: boolean; onClose: () => void; onCreate: (assetID: string) => Promise<void>; onError: (message: string) => void }) {
@@ -365,6 +447,7 @@ function CharacterLibraryPage({ onBack, onRefresh, onError }: { onBack: () => vo
 	const [name, setName] = useState('')
 	const [file, setFile] = useState<File | null>(null)
 	const [cardAspectRatio, setCardAspectRatio] = useState('3:2')
+	const [createOpen, setCreateOpen] = useState(false)
 	const [busy, setBusy] = useState(false)
 	const [deleteTarget, setDeleteTarget] = useState<CharacterCard | null>(null)
 	const [deleting, setDeleting] = useState(false)
@@ -378,43 +461,38 @@ function CharacterLibraryPage({ onBack, onRefresh, onError }: { onBack: () => vo
 		}, 2000)
 		return () => window.clearInterval(timer)
 	}, [selectedID, cards, onError])
-	const create = async () => { if (!name.trim() || !file || busy) return; setBusy(true); try { const asset = await api.upload(file); const character = await api.createCharacter(name.trim()); await api.createCard(character.id, [asset.id], '', cardAspectRatio); setName(''); setFile(null); await loadCharacters(); setSelectedID(character.id); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) } }
+	const create = async () => { if (!name.trim() || !file || busy) return; setBusy(true); try { const asset = await api.upload(file); const character = await api.createCharacter(name.trim()); await api.createCard(character.id, [asset.id], '', cardAspectRatio); setName(''); setFile(null); setCardAspectRatio('3:2'); setCreateOpen(false); await loadCharacters(); setSelectedID(character.id); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) } }
 	const iterate = async (_card: CharacterCard, assetID: string) => { if (!selectedID || !assetID || busy) return; setBusy(true); try { await api.importCard(selectedID, assetID); const result = await api.listCards(selectedID); setCards(result.data); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) } }
 	const setDefaultCard = async (card: CharacterCard) => { if (!selectedID || busy || card.is_default) return; setBusy(true); try { await api.setDefaultCard(selectedID, card.id); const [cardResult] = await Promise.all([api.listCards(selectedID), loadCharacters()]); setCards(cardResult.data); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) } }
+	const renameCard = async (card: CharacterCard, cardName: string) => { if (!selectedID || busy) return; setBusy(true); try { const result = await api.renameCard(selectedID, card.id, cardName); setCards((values) => values.map((value) => value.id === card.id ? { ...value, name: result.name } : value)); } catch (err) { onError(errorMessage(err)); throw err } finally { setBusy(false) } }
 	const retryCard = async (card: CharacterCard) => { if (!selectedID || busy) return; setBusy(true); try { await api.retryCard(selectedID, card.id); setCards(await api.listCards(selectedID).then((result) => result.data)); } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) } }
 	const removeCard = async () => { if (!selectedID || !deleteTarget || deleting) return; setDeleting(true); try { await api.deleteCard(selectedID, deleteTarget.id); setCards((values) => values.filter((card) => card.id !== deleteTarget.id)); setDeleteTarget(null); onRefresh() } catch (err) { onError(errorMessage(err)) } finally { setDeleting(false) } }
 	const selected = characters.find((character) => character.id === selectedID)
-	return <><Box className="character-library-page"><Stack className="gallery-page-header" direction="row" alignItems="center" spacing={1.5}><IconButton aria-label="返回创作列表" onClick={onBack}><ArrowBack /></IconButton><Box><Typography variant="overline" color="primary">角色设定</Typography><Typography variant="h4">角色卡库</Typography><Typography variant="body2" color="text.secondary">每一次调整都是独立版本，随时可以回看。</Typography></Box></Stack><Box className="character-library-content"><Paper className="character-create" variant="outlined"><Typography fontWeight={700}>创建角色</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: .5, mb: 1.5 }}>上传参考图后，我们会生成可持续使用的角色卡。</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap"><TextField size="small" label="角色名称" value={name} onChange={(event) => setName(event.target.value)} /><Button component="label" variant="outlined" startIcon={<ImageOutlined />}>{file ? file.name : '选择参考图'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] || null)} /></Button></Stack><Stack direction="row" spacing={.5} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mt: 1 }}><Typography variant="caption" color="text.secondary">角色卡画幅</Typography>{['3:2', '16:9', '1:1', '2:3', '9:16'].map((ratio) => <Button key={ratio} size="small" variant={cardAspectRatio === ratio ? 'contained' : 'outlined'} disabled={busy} onClick={() => setCardAspectRatio(ratio)}>{ratio}</Button>)}<Button variant="contained" disabled={busy || !name.trim() || !file} onClick={() => void create()}>{busy ? '正在创建…' : '创建角色卡'}</Button></Stack></Paper><Stack className="character-library-layout" direction="row" spacing={2}><Paper className="character-list-panel" variant="outlined"><Typography variant="subtitle2">我的角色</Typography><Stack spacing={.5} sx={{ mt: 1 }}>{characters.length ? characters.map((character) => <Button key={character.id} className="character-row" variant={selectedID === character.id ? 'contained' : 'text'} onClick={() => setSelectedID(character.id)}>{character.default_card_asset_id && <PreviewImage assetID={character.default_card_asset_id} alt={`${character.name} 默认角色卡`} interactive={false} />}{character.name}</Button>) : <Typography variant="body2" color="text.secondary">还没有角色。</Typography>}</Stack></Paper><Box className="character-cards-panel"><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1" fontWeight={700}>{selected?.name || '选择角色'}</Typography><Typography variant="caption" color="text.secondary">选择一张卡，写下修改要求即可创建新版本。</Typography></Box><Button size="small" onClick={() => selectedID && void api.listCards(selectedID).then((result) => setCards(result.data))}>刷新</Button></Stack><Box className="character-version-grid">{cards.map((card) => <CharacterCardVersion key={card.id} card={card} busy={busy || deleting} onIterate={iterate} onDelete={setDeleteTarget} onSetDefault={setDefaultCard} onRetry={retryCard} onError={onError} />)}</Box></Box></Stack></Box></Box><Dialog open={Boolean(deleteTarget)} onClose={() => !deleting && setDeleteTarget(null)}><DialogTitle>删除这个角色卡版本？</DialogTitle><DialogContent><DialogContentText>只会删除此版本，不会删除角色或其他版本。正在被对话使用的版本不能删除。</DialogContentText></DialogContent><DialogActions><Button disabled={deleting} onClick={() => setDeleteTarget(null)}>取消</Button><Button color="error" disabled={deleting} onClick={() => void removeCard()}>{deleting ? '正在删除…' : '删除'}</Button></DialogActions></Dialog></>
+	return <>
+		<Box className="character-library-page">
+			<Stack className="gallery-page-header character-library-header" direction="row" alignItems="center" justifyContent="space-between" spacing={1.5}>
+				<Stack direction="row" alignItems="center" spacing={1.5}>
+					<IconButton aria-label="返回创作列表" onClick={onBack}><ArrowBack /></IconButton>
+					<Box><Typography variant="overline" color="primary">角色设定</Typography><Typography variant="h4">角色卡库</Typography><Typography variant="body2" color="text.secondary">管理角色与可复用的角色卡版本。</Typography></Box>
+				</Stack>
+				<Button variant="contained" startIcon={<Add />} onClick={() => setCreateOpen(true)}>新建角色</Button>
+			</Stack>
+			<Box className="character-library-content">
+				<Stack className="character-library-layout" direction="row" spacing={2}>
+					<Paper className="character-list-panel" variant="outlined"><Typography variant="subtitle2">角色</Typography><Stack spacing={.5} sx={{ mt: 1 }}>{characters.length ? characters.map((character) => <Button key={character.id} className="character-row" variant={selectedID === character.id ? 'contained' : 'text'} onClick={() => setSelectedID(character.id)}>{character.default_card_asset_id && <PreviewImage assetID={character.default_card_asset_id} alt={`${character.name} 默认角色卡`} interactive={false} />}{character.name}</Button>) : <Typography variant="body2" color="text.secondary">尚未创建角色。</Typography>}</Stack></Paper>
+					<Box className="character-cards-panel"><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1" fontWeight={700}>{selected?.name || '选择角色'}</Typography><Typography variant="caption" color="text.secondary">角色卡是独立版本；可重命名、设为默认或派生新版本。</Typography></Box><Button size="small" disabled={!selectedID} onClick={() => selectedID && void api.listCards(selectedID).then((result) => setCards(result.data))}>刷新</Button></Stack><Box className="character-version-grid">{cards.map((card) => <CharacterCardVersion key={card.id} card={card} busy={busy || deleting} onIterate={iterate} onDelete={setDeleteTarget} onSetDefault={setDefaultCard} onRetry={retryCard} onRename={renameCard} onError={onError} />)}</Box></Box>
+				</Stack>
+			</Box>
+		</Box>
+		<CharacterCreateDialog open={createOpen} busy={busy} name={name} file={file} aspectRatio={cardAspectRatio} onClose={() => !busy && setCreateOpen(false)} onNameChange={setName} onFileChange={setFile} onAspectRatioChange={setCardAspectRatio} onCreate={create} />
+		<Dialog open={Boolean(deleteTarget)} onClose={() => !deleting && setDeleteTarget(null)}><DialogTitle>删除这个角色卡版本？</DialogTitle><DialogContent><DialogContentText>只会删除此版本，不会删除角色或其他版本。正在被对话使用的版本不能删除。</DialogContentText></DialogContent><DialogActions><Button disabled={deleting} onClick={() => setDeleteTarget(null)}>取消</Button><Button color="error" disabled={deleting} onClick={() => void removeCard()}>{deleting ? '正在删除…' : '删除'}</Button></DialogActions></Dialog>
+	</>
 }
 
-function CharacterDialog({ open, onClose, onRefresh, onError }: { open: boolean; onClose: () => void; onRefresh: () => void; onError: (message: string) => void }) {
-  const [name, setName] = useState('')
-  const [file, setFile] = useState<File | null>(null)
-  const [cardAspectRatio, setCardAspectRatio] = useState('3:2')
-  const [busy, setBusy] = useState(false)
-	const [mode, setMode] = useState<'generate' | 'import'>('generate')
-	const [view, setView] = useState<'create' | 'select'>('create')
-	const [characters, setCharacters] = useState<Character[]>([])
-	const [cards, setCards] = useState<CharacterCard[]>([])
-	const [selectedCharacterID, setSelectedCharacterID] = useState('')
-	const [selectedCard, setSelectedCard] = useState<CharacterCard | null>(null)
-	useEffect(() => { if (open) void api.listCharacters().then((result) => setCharacters(result.data)).catch((err) => onError(errorMessage(err))) }, [open])
-	useEffect(() => { if (selectedCharacterID) void api.listCards(selectedCharacterID).then((result) => setCards(result.data)).catch((err) => onError(errorMessage(err))); else setCards([]) }, [selectedCharacterID])
-  const create = async () => {
-    if (!name.trim() || !file) return
-    setBusy(true)
-    try {
-		const asset = await api.upload(file)
-      const character = await api.createCharacter(name.trim())
-		const card = mode === 'import' ? await api.importCard(character.id, asset.id) : await api.createCard(character.id, [asset.id], '', cardAspectRatio)
-		setName(''); setFile(null); onClose(); onRefresh()
-    } catch (err) { onError(errorMessage(err)) } finally { setBusy(false) }
-  }
-  return <Dialog open={open} onClose={() => !busy && onClose()} fullWidth maxWidth="xs">
-    <DialogTitle>添加角色卡</DialogTitle>
-		<DialogContent><Stack spacing={2} sx={{ pt: 1 }}><Stack direction="row" spacing={1}><Button size="small" variant={view === 'select' ? 'contained' : 'outlined'} onClick={() => setView('select')}>已有角色卡</Button><Button size="small" variant={view === 'create' ? 'contained' : 'outlined'} onClick={() => setView('create')}>新建角色卡</Button></Stack>{view === 'select' ? <><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{characters.map((character) => <Button key={character.id} size="small" variant={character.id === selectedCharacterID ? 'contained' : 'outlined'} onClick={() => setSelectedCharacterID(character.id)}>{character.name}</Button>)}</Stack>{selectedCharacterID && <Stack spacing={1}>{cards.filter((card) => card.output_asset_id).map((card) => <Button key={card.id} className="character-card-choice" variant="outlined" onClick={() => setSelectedCard(card)}><PreviewImage assetID={card.output_asset_id!} alt="角色卡预览" interactive={false} />查看角色卡</Button>)}</Stack>}{selectedCard && <Paper variant="outlined" sx={{ p: 1.5 }}><Typography fontWeight={700}>角色卡信息</Typography><Typography variant="caption" color="text.secondary">角色卡：{selectedCard.status} · 设定提取：{selectedCard.metadata_status}</Typography><Typography component="pre" variant="caption" sx={{ whiteSpace: 'pre-wrap', m: '8px 0 0' }}>{selectedCard.metadata_status === 'ready' ? JSON.stringify(selectedCard.metadata || {}, null, 2) : '设定正在后台提取，完成后重新打开查看。'}</Typography></Paper>}</> : <><Stack direction="row" spacing={1}><Button size="small" variant={mode === 'generate' ? 'contained' : 'outlined'} onClick={() => setMode('generate')}>生成角色卡</Button><Button size="small" variant={mode === 'import' ? 'contained' : 'outlined'} onClick={() => setMode('import')}>导入已有角色卡</Button></Stack><Typography color="text.secondary" variant="body2">{mode === 'import' ? '上传已有角色卡；系统会保留原图并提取设定。' : '上传角色参考图，系统会异步生成角色卡。'}</Typography><TextField label="角色名称" value={name} onChange={(event) => setName(event.target.value)} autoFocus /><Button component="label" variant="outlined" startIcon={<ImageOutlined />}>{file ? file.name : '选择图片'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] || null)} /></Button>{mode === 'generate' && <Stack direction="row" spacing={.5} alignItems="center" useFlexGap flexWrap="wrap"><Typography variant="caption" color="text.secondary">角色卡画幅</Typography>{['3:2', '16:9', '1:1', '2:3', '9:16'].map((ratio) => <Button key={ratio} size="small" variant={cardAspectRatio === ratio ? 'contained' : 'outlined'} disabled={busy} onClick={() => setCardAspectRatio(ratio)}>{ratio}</Button>)}</Stack>}</>}</Stack></DialogContent>
-		<DialogActions><Button disabled={busy} onClick={onClose}>取消</Button>{view === 'create' && <Button variant="contained" disabled={!name.trim() || !file || busy} onClick={() => void create()}>{busy ? '正在创建…' : mode === 'import' ? '导入角色卡' : '生成角色卡'}</Button>}</DialogActions>
-  </Dialog>
+function CharacterCreateDialog({ open, busy, name, file, aspectRatio, onClose, onNameChange, onFileChange, onAspectRatioChange, onCreate }: { open: boolean; busy: boolean; name: string; file: File | null; aspectRatio: string; onClose: () => void; onNameChange: (value: string) => void; onFileChange: (file: File | null) => void; onAspectRatioChange: (value: string) => void; onCreate: () => Promise<void> }) {
+	const [showOptions, setShowOptions] = useState(false)
+	useEffect(() => { if (open) setShowOptions(false) }, [open])
+	return <Dialog open={open} onClose={() => !busy && onClose()} fullWidth maxWidth="sm" aria-labelledby="new-character-title"><DialogTitle id="new-character-title">新建角色</DialogTitle><DialogContent><Stack spacing={2.25} sx={{ pt: 1 }}><Typography variant="body2" color="text.secondary">为角色命名并上传一张清晰参考图。系统会据此生成第一张角色卡。</Typography><TextField autoFocus fullWidth label="角色名称" placeholder="例如：林夏" value={name} disabled={busy} inputProps={{ maxLength: 100 }} onChange={(event) => onNameChange(event.target.value)} /><Box><Typography variant="subtitle2" sx={{ mb: 1 }}>参考图</Typography><Button className="character-reference-upload" component="label" variant="outlined" disabled={busy} startIcon={<ImageOutlined />}>{file ? '更换参考图' : '选择参考图'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => onFileChange(event.target.files?.[0] || null)} /></Button>{file && <Paper className="character-file-summary" variant="outlined"><Typography variant="body2" noWrap>{file.name}</Typography><Typography variant="caption" color="text.secondary">已准备好生成角色卡</Typography></Paper>}</Box><Box><Button size="small" disabled={busy} onClick={() => setShowOptions((value) => !value)}>{showOptions ? '收起画幅设置' : '设置角色卡画幅（可选）'}</Button>{showOptions && <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>{['3:2', '16:9', '1:1', '2:3', '9:16'].map((ratio) => <Button key={ratio} size="small" variant={aspectRatio === ratio ? 'contained' : 'outlined'} disabled={busy} aria-pressed={aspectRatio === ratio} onClick={() => onAspectRatioChange(ratio)}>{ratio}</Button>)}</Stack>}</Box>{busy && <ThinkingNotice choice="正在创建角色卡" />}</Stack></DialogContent><DialogActions><Button disabled={busy} onClick={onClose}>取消</Button><Button variant="contained" disabled={busy || !name.trim() || !file} onClick={() => void onCreate()}>{busy ? '正在创建…' : '创建角色卡'}</Button></DialogActions></Dialog>
 }
 
 function Composer({ sessionID, feedbackGenerationID, onRefresh, onError }: { sessionID: string; feedbackGenerationID: string | null; onRefresh: () => void; onError: (message: string) => void }) {
