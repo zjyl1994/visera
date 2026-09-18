@@ -24,8 +24,15 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
-.env
+# Local runtime configuration (contains provider credentials)
+config.toml
+config.local.toml
+data/
+web/node_modules/
+node_modules/
+dist/
+web/dist/
+*.tsbuildinfo
 
 # Editor/IDE
 # .idea/

@@ -1,0 +1,60 @@
+[server]
+listen = "127.0.0.1:8080"
+
+[auth]
+# Keep config.toml private (chmod 600). These credentials protect the app.
+username = "admin"
+password = "replace-with-a-strong-password"
+
+[database]
+path = "data/visera.db"
+
+[storage]
+asset_dir = "data/assets"
+
+[worker]
+count = 2
+
+[models]
+# Select a model/endpoint whose supported_parameters include tools.
+text_model = "openrouter/<configured-text-model>"
+image_model = "<configured-image-model>"
+# More varied visual follow-up questions and art-direction inference (0–2).
+agent_temperature = 0.75
+
+[image]
+# n is fixed to 1. The Agent selects a supported ratio per image. GPT Image 2.5
+# Flare accepts aspect_ratio but not size, so Visera never sends a pixel size.
+default_preset = "draft"
+# Some providers accept "low" to reduce false-positive safety blocks. This
+# never disables provider safety rules; use "auto" when the relay lacks support.
+moderation = "auto"
+
+[image.draft]
+quality = "low"
+aspect_ratio = "1:1"
+
+[image.standard]
+quality = "medium"
+aspect_ratio = "1:1"
+
+[image.high]
+quality = "high"
+aspect_ratio = "1:1"
+
+[openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key = "replace-with-your-api-key"
+
+[openrouter.headers]
+"HTTP-Referer" = "https://visera.local"
+"X-Title" = "Visera"
+
+[timeouts]
+model_ms = 120000
+image_ms = 300000
+
+[limits]
+max_image_retries = 2
+max_concurrent_generations = 2
+max_daily_generations = 50
