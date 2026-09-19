@@ -2,12 +2,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import { isIP } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import multer from 'multer';
 import { sql } from 'drizzle-orm';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import pino from 'pino';
 import { pinoHttp } from 'pino-http';
 import { z } from 'zod';
@@ -26,6 +27,7 @@ const cfg = loadConfig(path.resolve(configPath));
 fs.mkdirSync(cfg.storage.asset_dir, { recursive: true });
 const db = openDatabase(cfg.database.path);
 const app = express();
+app.set('trust proxy', 'loopback');
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info' });
 const openai = new OpenAI({ baseURL: cfg.openrouter.base_url, apiKey: cfg.openrouter.api_key || 'configured-by-header', defaultHeaders: cfg.openrouter.headers });
 const jobs = new PQueue({ concurrency: cfg.worker.count });
@@ -51,11 +53,31 @@ const run = (query: string, ...args: unknown[]): any => db.run(statement(query, 
 const json = value => value == null ? null : JSON.parse(value);
 const fail = (res, status, code, message) => res.status(status).json({ error: { code, message } });
 const optional = value => value || null;
+const loginAttemptWindowMs = 15 * 60_000;
+const loginFailureLimit = 10;
+const loginBanMs = 24 * 60 * 60_000;
+function validIP(value: unknown) { const candidate = String(value ?? '').trim().replace(/^\[|\]$/g, ''); return isIP(candidate) ? candidate : null; }
+function clientIP(req) {
+  const real = validIP(req.get('X-Real-IP'));
+  if (real) return real;
+  const forwarded = String(req.get('X-Forwarded-For') ?? '').split(',').map(validIP).find(Boolean);
+  return forwarded || validIP(req.socket.remoteAddress) || 'unknown';
+}
+function loginBan(ip: string) { const attempt = one('SELECT failed_count,last_attempt_at,ban_until FROM login_attempts WHERE ip=?', ip); return attempt?.ban_until > now() ? attempt : null; }
+function recordLoginFailure(ip: string) {
+  const stamp = now(), previous = one('SELECT failed_count,last_attempt_at FROM login_attempts WHERE ip=?', ip);
+  const failedCount = previous && stamp - Number(previous.last_attempt_at) <= loginAttemptWindowMs ? Number(previous.failed_count) + 1 : 1;
+  const banUntil = failedCount >= loginFailureLimit ? stamp + loginBanMs : null;
+  run('INSERT INTO login_attempts(ip,failed_count,last_attempt_at,ban_until) VALUES(?,?,?,?) ON CONFLICT(ip) DO UPDATE SET failed_count=excluded.failed_count,last_attempt_at=excluded.last_attempt_at,ban_until=excluded.ban_until', ip, failedCount, stamp, banUntil);
+  return banUntil;
+}
+function clearLoginFailures(ip: string) { run('DELETE FROM login_attempts WHERE ip=?', ip); }
 
 app.use(express.json({ limit: '2mb' }));
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } }));
 app.use(pinoHttp({ logger, genReqId: req => req.headers['x-request-id']?.toString() ?? crypto.randomUUID() }));
-app.use('/api/v1/auth/login', rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false }));
+app.use('/api/v1/auth/login', (req, res, next) => { const ban = loginBan(clientIP(req)); return ban ? fail(res, 429, 'IP_BANNED', `该 IP 暂时无法登录，请在 ${Math.ceil((ban.ban_until - now()) / 60_000)} 分钟后重试`) : next(); });
+app.use('/api/v1/auth/login', rateLimit({ windowMs: loginAttemptWindowMs, limit: loginFailureLimit, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: req => ipKeyGenerator(clientIP(req)) }));
 app.use('/api/v1/assets', rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.use('/api/v1/generations', rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
@@ -101,7 +123,7 @@ function saveMemoryCandidate(characterID: string | null | undefined, candidate: 
 
 app.get('/api/v1/health', (_req, res) => res.json({ status: 'ok' }));
 app.get('/metrics', async (_req, res) => { res.type(metrics.contentType); res.send(await metrics.metrics()); });
-app.post('/api/v1/auth/login', async (req, res, next) => { try { const parsed = z.object({ username: z.string().min(1), password: z.string().min(1), remember: z.boolean().optional().default(false) }).safeParse(req.body); if (!parsed.success) return fail(res, 400, 'INVALID_LOGIN', '请输入账户和密码'); const { username, password, remember } = parsed.data; const passwordOK = cfg.auth.password_hash ? await verifyArgon2(cfg.auth.password_hash, password) : password === cfg.auth.password; if (username !== cfg.auth.username || !passwordOK) return fail(res, 401, 'INVALID_CREDENTIALS', '账户或密码不正确'); const expiry = now() + (remember ? 30 : 1) * 86400000; res.cookie('visera_session', token(expiry), { httpOnly: true, sameSite: 'lax', secure: req.secure, ...(remember ? { maxAge: 30 * 86400000 } : {}) }); res.json({ authenticated: true, remembered: remember }); } catch (error) { next(error); } });
+app.post('/api/v1/auth/login', async (req, res, next) => { try { const ip = clientIP(req); const parsed = z.object({ username: z.string().min(1), password: z.string().min(1), remember: z.boolean().optional().default(false) }).safeParse(req.body); if (!parsed.success) return fail(res, 400, 'INVALID_LOGIN', '请输入账户和密码'); const { username, password, remember } = parsed.data; const passwordOK = cfg.auth.password_hash ? await verifyArgon2(cfg.auth.password_hash, password) : password === cfg.auth.password; if (username !== cfg.auth.username || !passwordOK) { const banUntil = recordLoginFailure(ip); return banUntil ? fail(res, 429, 'IP_BANNED', '登录失败次数过多，该 IP 已被封禁 24 小时') : fail(res, 401, 'INVALID_CREDENTIALS', '账户或密码不正确'); } clearLoginFailures(ip); const expiry = now() + (remember ? 30 : 1) * 86400000; res.cookie('visera_session', token(expiry), { httpOnly: true, sameSite: 'lax', secure: req.secure, ...(remember ? { maxAge: 30 * 86400000 } : {}) }); res.json({ authenticated: true, remembered: remember }); } catch (error) { next(error); } });
 app.get('/api/v1/auth/session', (req, res) => res.json({ authenticated: authenticated(req) }));
 app.post('/api/v1/auth/logout', (_req, res) => { res.clearCookie('visera_session'); res.status(204).end(); });
 app.use('/api/v1', auth);

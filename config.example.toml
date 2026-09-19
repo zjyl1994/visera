@@ -32,15 +32,15 @@ moderation = "auto"
 
 [image.draft]
 quality = "low"
-aspect_ratio = "1:1"
+aspect_ratio = "3:2"
 
 [image.standard]
 quality = "medium"
-aspect_ratio = "1:1"
+aspect_ratio = "3:2"
 
 [image.high]
 quality = "high"
-aspect_ratio = "1:1"
+aspect_ratio = "3:2"
 
 [openrouter]
 base_url = "https://openrouter.ai/api/v1"
