@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Lightbox from 'yet-another-react-lightbox'
@@ -24,10 +24,17 @@ function ImageLightbox({ open, onClose, src, alt, downloadURL, title, descriptio
   return <Lightbox open={open} close={onClose} slides={[{ src, alt, download: downloadURL, title, description }]} plugins={[Zoom, DownloadPlugin, Captions]} carousel={{ finite: true }} controller={{ closeOnBackdropClick: true }} />
 }
 
-function PreviewImage({ assetID, alt = '图片', className, loading, width, height, style, interactive = true }: { assetID: string; alt?: string; className?: string; loading?: 'eager' | 'lazy'; width?: string | number; height?: string | number; style?: CSSProperties; interactive?: boolean }) {
+function AssetImage({ assetID, alt, className, loading = 'lazy', width, height, style, aspectRatio = '3 / 2', imageClassName, onClick, onKeyDown, interactive = false }: { assetID: string; alt: string; className?: string; loading?: 'eager' | 'lazy'; width?: string | number; height?: string | number; style?: CSSProperties; aspectRatio?: string; imageClassName?: string; onClick?: (event: MouseEvent<HTMLImageElement>) => void; onKeyDown?: (event: KeyboardEvent<HTMLImageElement>) => void; interactive?: boolean }) {
+	const [status, setStatus] = useState<'loading' | 'loaded' | 'failed'>('loading')
+	useEffect(() => setStatus('loading'), [assetID])
+	const frameStyle: CSSProperties = { ...style, width, height, aspectRatio: height ? undefined : aspectRatio }
+	return <Box component="span" className={`image-frame ${className || ''} is-${status}`.trim()} style={frameStyle} aria-busy={status === 'loading'}>{status === 'loading' && <span className="image-placeholder" aria-label="图片加载中"><CircularProgress size={24} /></span>}<img key={assetID} className={imageClassName || ''} src={assetURL(assetID)} alt={alt} loading={loading} role={interactive ? 'button' : undefined} tabIndex={interactive ? 0 : undefined} onLoad={() => setStatus('loaded')} onError={() => setStatus('failed')} onClick={onClick} onKeyDown={onKeyDown} />{status === 'failed' && <span className="image-load-error" role="status">图片加载失败</span>}</Box>
+}
+
+function PreviewImage({ assetID, alt = '图片', className, loading, width, height, style, interactive = true, aspectRatio }: { assetID: string; alt?: string; className?: string; loading?: 'eager' | 'lazy'; width?: string | number; height?: string | number; style?: CSSProperties; interactive?: boolean; aspectRatio?: string }) {
 	const [open, setOpen] = useState(false)
 	const openPreview = () => setOpen(true)
-	return <><img className={`${className || ''} previewable-image`.trim()} src={assetURL(assetID)} alt={alt} loading={loading} width={width} height={height} style={style} role={interactive ? 'button' : undefined} tabIndex={interactive ? 0 : undefined} onClick={interactive ? (event) => { event.stopPropagation(); openPreview() } : undefined} onKeyDown={interactive ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openPreview() } } : undefined} />{interactive && <ImageLightbox open={open} onClose={() => setOpen(false)} src={assetURL(assetID)} alt={alt} downloadURL={assetDownloadURL(assetID)} />}</>
+	return <><AssetImage assetID={assetID} alt={alt} className={className} loading={loading} width={width} height={height} style={style} aspectRatio={aspectRatio} imageClassName="previewable-image" interactive={interactive} onClick={interactive ? (event) => { event.stopPropagation(); openPreview() } : undefined} onKeyDown={interactive ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openPreview() } } : undefined} />{interactive && <ImageLightbox open={open} onClose={() => setOpen(false)} src={assetURL(assetID)} alt={alt} downloadURL={assetDownloadURL(assetID)} />}</>
 }
 
 function asObject(value: unknown): ObjectContent {

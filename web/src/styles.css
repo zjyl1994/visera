@@ -35,10 +35,34 @@ body { min-height: 100dvh; background: var(--ink); }
 .reference-bubble { display: flex; gap: 12px; align-items: center; }
 .reference-bubble img { width: 92px; height: 72px; object-fit: cover; border-radius: 10px; }
 .generation-bubble { width: min(100%, 620px); }
-.generation-media { position: relative; }
-.generation-bubble img { width: 100%; height: auto; max-height: min(70dvh, 700px); object-fit: contain; border-radius: 10px; display: block; background: var(--ink); }
+.generation-media { position: relative; aspect-ratio: 3 / 2; overflow: hidden; border-radius: 10px; background: var(--surface-subtle); }
+.generation-media::before { content: '图片加载中'; position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: .85rem; background: linear-gradient(110deg, var(--surface-subtle) 25%, var(--surface-muted) 45%, var(--surface-subtle) 65%); }
+.generation-bubble img { position: relative; width: 100%; height: 100%; max-height: min(70dvh, 700px); object-fit: contain; border-radius: 10px; display: block; }
 .previewable-image { cursor: zoom-in; }
 .previewable-image:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.image-frame { position: relative; display: block; width: 100%; max-width: 100%; overflow: hidden; border-radius: inherit; background: var(--surface-subtle); }
+.image-frame > img { display: block; width: 100%; height: 100%; object-fit: contain; opacity: 0; transition: opacity .16s ease; }
+.image-frame.is-loaded > img { opacity: 1; }
+.image-placeholder, .image-load-error { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); background: linear-gradient(110deg, var(--surface-subtle) 25%, var(--surface-muted) 45%, var(--surface-subtle) 65%); }
+.image-placeholder { z-index: 1; }
+.image-load-error { z-index: 2; padding: 12px; font-size: .82rem; text-align: center; }
+.image-frame.is-failed > img { display: none; }
+.reference-bubble .image-frame { width: 92px; height: 72px; flex: 0 0 92px; border-radius: 10px; }
+.generation-image { width: 100%; max-height: min(70dvh, 700px); border-radius: 10px; background: var(--ink); }
+.generation-image > img { object-fit: contain; }
+.MuiDialogContent-root .image-frame { max-width: 100%; max-height: 42dvh; }
+.session-selection-summary .image-frame { width: 44px; height: 38px; flex: 0 0 44px; border-radius: 6px; }
+.session-selection-summary .image-frame > img { object-fit: cover; }
+.identity-card { width: 100%; max-height: 220px; margin: 8px 0 12px; border-radius: 10px; background: var(--ink); }
+.identity-card > img { object-fit: cover; }
+.studio-image { width: min(100%, 860px); margin: 12px auto 22px; border-radius: 12px; box-shadow: 0 24px 72px var(--shadow), 0 0 0 1px rgba(60,60,67,.14); background: var(--base); }
+.gallery-card > .image-frame { width: 100%; aspect-ratio: 1 / .82; border-radius: 0; }
+.gallery-card > .image-frame > img { object-fit: cover; }
+.character-version-card > .image-frame { width: 100%; aspect-ratio: 1 / 1.16; border-radius: 0; }
+.character-version-card > .image-frame > img { object-fit: cover; }
+.character-row > .image-frame { width: 32px; height: 32px; flex: 0 0 32px; border-radius: 9px; box-shadow: 0 2px 10px rgba(0,0,0,.22); }
+.character-row > .image-frame > img { object-fit: cover; }
+@media (prefers-reduced-motion: reduce) { .image-frame > img { transition: none; } }
 .lightbox-image { max-width: 100%; max-height: calc(100dvh - 150px); object-fit: contain; }
 .MuiDialogContent-root .previewable-image { max-width: 100%; max-height: 42dvh; height: auto; object-fit: contain; }
 .preview-image { width: 100%; max-height: 65dvh; object-fit: contain; border-radius: 10px; background: var(--ink); }

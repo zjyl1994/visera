@@ -163,25 +163,62 @@ app.get('/api/v1/auth/session', (req, res) => res.json({ authenticated: authenti
 app.post('/api/v1/auth/logout', (_req, res) => { res.clearCookie('visera_session'); res.status(204).end(); });
 app.use('/api/v1', auth);
 
-app.post('/api/v1/assets', upload.single('file'), (req, res) => { if (!req.file?.buffer) return fail(res, 400, 'INVALID_FILE', '请选择文件'); const assetID = id(), hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex'), name = `${assetID}-${hash.slice(0, 12)}`; fs.writeFileSync(path.join(cfg.storage.asset_dir, name), req.file.buffer); const stamp = now(); run('INSERT INTO assets(id,kind,storage_key,mime_type,byte_size,sha256,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)', assetID, 'upload', name, req.file.mimetype || 'application/octet-stream', req.file.size, hash, 'ready', stamp, stamp); res.status(201).json({ id: assetID }); });
+app.post('/api/v1/assets', upload.single('file'), async (req, res) => {
+  if (!req.file?.buffer) return fail(res, 400, 'INVALID_FILE', '请选择文件');
+  try {
+    res.status(201).json({ id: await persistImageAsset(req.file.buffer, 'upload') });
+  } catch {
+    return fail(res, 400, 'INVALID_IMAGE', '请选择可处理的图片文件');
+  }
+});
 app.get('/api/v1/assets/:id', (req, res) => { const asset = one('SELECT * FROM assets WHERE id=?', req.params.id); return asset ? res.json(assetView(asset)) : fail(res, 404, 'NOT_FOUND', '素材不存在'); });
-app.get('/api/v1/assets/:id/content', (req, res) => { const asset = one('SELECT * FROM assets WHERE id=?', req.params.id); if (!asset) return fail(res, 404, 'NOT_FOUND', '素材不存在'); const file = path.join(cfg.storage.asset_dir, asset.storage_key); if (!fs.existsSync(file)) return fail(res, 404, 'ASSET_MISSING', '素材文件不存在'); res.type(asset.mime_type); if (req.query.download) { res.set('Cache-Control', 'no-store'); res.attachment(assetDownloadName(asset)); } else res.set('Cache-Control', 'private, max-age=31536000, immutable'); res.sendFile(file); });
+app.get('/api/v1/assets/:id/content', async (req, res) => {
+  let asset = one('SELECT * FROM assets WHERE id=?', req.params.id);
+  if (!asset) return fail(res, 404, 'NOT_FOUND', '素材不存在');
+  asset = await convertAssetToWebP(asset);
+  const file = path.join(cfg.storage.asset_dir, asset.storage_key);
+  if (!fs.existsSync(file)) return fail(res, 404, 'ASSET_MISSING', '素材文件不存在');
+  res.type(asset.mime_type);
+  if (req.query.download) { res.set('Cache-Control', 'no-store'); res.attachment(assetDownloadName(asset)); } else res.set('Cache-Control', 'private, max-age=31536000, immutable');
+  res.sendFile(file);
+});
 
 function assetDataURL(asset: any) {
   const bytes = fs.readFileSync(path.join(cfg.storage.asset_dir, asset.storage_key));
   return `data:${asset.mime_type};base64,${bytes.toString('base64')}`;
 }
-function persistAsset(bytes: Buffer, mimeType: string, kind: string) {
+async function toWebP(bytes: Buffer) {
+  // The provider may ignore output_format for a particular model. Re-encoding
+  // here keeps every persisted image consistent regardless of that behavior.
+  return sharp(bytes, { animated: false, failOn: 'none' }).rotate().webp({ quality: 90, effort: 4 }).toBuffer();
+}
+async function persistImageAsset(input: Buffer, kind: string) {
+  const bytes = await toWebP(input);
   const assetID = id(), hash = crypto.createHash('sha256').update(bytes).digest('hex'), storageKey = `${assetID}-${hash.slice(0, 12)}`, stamp = now();
   fs.writeFileSync(path.join(cfg.storage.asset_dir, storageKey), bytes);
-  run('INSERT INTO assets(id,kind,storage_key,mime_type,byte_size,sha256,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)', assetID, kind, storageKey, mimeType, bytes.length, hash, 'ready', stamp, stamp);
+  run('INSERT INTO assets(id,kind,storage_key,mime_type,byte_size,sha256,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)', assetID, kind, storageKey, 'image/webp', bytes.length, hash, 'ready', stamp, stamp);
   return assetID;
+}
+async function convertAssetToWebP(asset: any) {
+  if (String(asset.mime_type).toLowerCase() === 'image/webp' || !String(asset.mime_type).startsWith('image/')) return asset;
+  const file = path.join(cfg.storage.asset_dir, asset.storage_key);
+  if (!fs.existsSync(file)) return asset;
+  try {
+    const bytes = await toWebP(fs.readFileSync(file));
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+    fs.writeFileSync(file, bytes);
+    run('UPDATE assets SET mime_type=?,byte_size=?,sha256=?,updated_at=? WHERE id=?', 'image/webp', bytes.length, hash, now(), asset.id);
+    return { ...asset, mime_type: 'image/webp', byte_size: bytes.length, sha256: hash };
+  } catch (error) {
+    logger.warn({ err: error, assetID: asset.id }, 'could not convert legacy image to webp');
+    return asset;
+  }
 }
 async function generateReferencedImage(prompt: string, references: string[], presetConfig: any) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...cfg.openrouter.headers };
   if (cfg.openrouter.api_key) headers.Authorization = `Bearer ${cfg.openrouter.api_key}`;
   const response = await providerLimiter.schedule(() => fetch(`${cfg.openrouter.base_url.replace(/\/$/, '')}/images`, {
-    method: 'POST', headers, signal: AbortSignal.timeout(cfg.timeouts.image_ms), body: JSON.stringify({ model: cfg.models.image_model, prompt, n: 1, quality: presetConfig.quality, aspect_ratio: presetConfig.aspect_ratio, moderation: cfg.image.moderation, input_references: references.map(url => ({ type: 'image_url', image_url: { url } })) }),
+    method: 'POST', headers, signal: AbortSignal.timeout(cfg.timeouts.image_ms), body: JSON.stringify({ model: cfg.models.image_model, prompt, n: 1, quality: presetConfig.quality, aspect_ratio: presetConfig.aspect_ratio, output_format: 'webp', output_compression: 90, moderation: cfg.image.moderation, input_references: references.map(url => ({ type: 'image_url', image_url: { url } })) }),
   }));
   const body: any = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || `图像服务返回 ${response.status}`);
@@ -239,7 +276,7 @@ app.post('/api/v1/characters/:id/cards/preview', async (req, res, next) => {
     if (assets.some(asset => !asset)) return fail(res, 400, 'INVALID_ASSET', '角色卡素材不存在');
     const references = assets.map(asset => assetDataURL(asset));
     const result = await generateReferencedImage(`Create a revised character card. Preserve the character's identity, face, and recognizable features from the reference image(s). Apply this requested change: ${input.data.requirements}`, references, cfg.image.standard);
-    const assetID = persistAsset(result.bytes, result.mime, 'character_card_preview');
+    const assetID = await persistImageAsset(result.bytes, 'character_card_preview');
     res.json({ asset_id: assetID });
   } catch (error) { next(error); }
 });
@@ -347,7 +384,7 @@ async function providerImage(generation) {
   return generateReferencedImage(`${generation.prompt}${characterConsistencyPrompt(generation)}`, generationReferences(generation), presetConfig);
 }
 async function processJobs() { const job = one("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1"); if (!job) return; run("UPDATE jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=?", now(), job.id); try { if (job.kind === 'image_generation') await generate(job.resource_id); else if (job.kind === 'character_card') await card(job.resource_id); else if (job.kind === 'character_card_analysis') await analyseCharacterCard(job.resource_id); run("UPDATE jobs SET status='succeeded',updated_at=? WHERE id=?", now(), job.id); } catch (error) { const attempts = job.attempts + 1, retry = attempts < job.max_attempts; run('UPDATE jobs SET status=?,attempts=?,updated_at=? WHERE id=?', retry ? 'queued' : 'failed', attempts, now(), job.id); run('INSERT INTO error_logs(id,kind,resource_id,code,message,created_at) VALUES(?,?,?,?,?,?)', id(), job.kind, job.resource_id, 'JOB_FAILED', String(error.message).slice(0, 600), now()); if (job.kind === 'image_generation' && !retry) { const generation = one('SELECT * FROM generations WHERE id=?', job.resource_id); run("UPDATE generations SET status='failed',error_code=?,updated_at=? WHERE id=?", 'GENERATION_FAILED', now(), job.resource_id); generationCount.inc({ status: 'failed' }); emit(generation.session_id, 'generation.failed', { generation_id: generation.id, status: 'failed' }); } if (job.kind === 'character_card' && !retry) run("UPDATE character_cards SET status='failed',metadata_status='failed',updated_at=? WHERE id=?", now(), job.resource_id); if (job.kind === 'character_card_analysis' && !retry) run("UPDATE character_cards SET metadata_status='failed',updated_at=? WHERE id=?", now(), job.resource_id); } }
-async function generate(generationID) { const generation = one('SELECT * FROM generations WHERE id=?', generationID); if (!generation) throw new Error('generation missing'); run("UPDATE generations SET status='running',updated_at=? WHERE id=?", now(), generationID); emit(generation.session_id, 'generation.progress', { generation_id: generationID, status: 'running' }); const output = await providerImage(generation); const assetID = id(), hash = crypto.createHash('sha256').update(output.bytes).digest('hex'), name = `${assetID}-${hash.slice(0,12)}`; fs.writeFileSync(path.join(cfg.storage.asset_dir, name), output.bytes); const thumbnail = await sharp(output.bytes).resize({ width: 512, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer(); fs.writeFileSync(path.join(cfg.storage.asset_dir, `${name}.thumb.webp`), thumbnail); const stamp = now(); run('INSERT INTO assets(id,kind,storage_key,mime_type,byte_size,sha256,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)', assetID, 'generated_image', name, output.mime, output.bytes.length, hash, 'ready', stamp, stamp); run("UPDATE generations SET status='succeeded',output_asset_id=?,updated_at=? WHERE id=?", assetID, stamp, generationID); run('UPDATE messages SET content=?,asset_id=?,updated_at=? WHERE generation_id=?', JSON.stringify({ generation_id: generationID, asset_id: assetID, aspect_ratio: generation.aspect_ratio, status: 'succeeded' }), assetID, stamp, generationID); const usageData = output.usage; run('INSERT INTO model_calls(id,kind,resource_id,model_name,cost,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)', id(), 'image_generation', generationID, generation.model_name, Number(usageData.cost || 0), 0, 0, 0, stamp); generationCount.inc({ status: 'succeeded' }); emit(generation.session_id, 'generation.completed', { generation_id: generationID, asset_id: assetID, status: 'succeeded' }); }
+async function generate(generationID) { const generation = one('SELECT * FROM generations WHERE id=?', generationID); if (!generation) throw new Error('generation missing'); run("UPDATE generations SET status='running',updated_at=? WHERE id=?", now(), generationID); emit(generation.session_id, 'generation.progress', { generation_id: generationID, status: 'running' }); const output = await providerImage(generation); const assetID = await persistImageAsset(output.bytes, 'generated_image'); const stamp = now(); run("UPDATE generations SET status='succeeded',output_asset_id=?,updated_at=? WHERE id=?", assetID, stamp, generationID); run('UPDATE messages SET content=?,asset_id=?,updated_at=? WHERE generation_id=?', JSON.stringify({ generation_id: generationID, asset_id: assetID, aspect_ratio: generation.aspect_ratio, status: 'succeeded' }), assetID, stamp, generationID); const usageData = output.usage; run('INSERT INTO model_calls(id,kind,resource_id,model_name,cost,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)', id(), 'image_generation', generationID, generation.model_name, Number(usageData.cost || 0), 0, 0, 0, stamp); generationCount.inc({ status: 'succeeded' }); emit(generation.session_id, 'generation.completed', { generation_id: generationID, asset_id: assetID, status: 'succeeded' }); }
 async function card(cardID) {
   const value = one('SELECT * FROM character_cards WHERE id=?', cardID);
   if (!value) throw new Error('card missing');
@@ -360,7 +397,7 @@ async function card(cardID) {
   const character = one('SELECT * FROM characters WHERE id=?', value.character_id);
   const prompt = `Create a reusable character reference card from the supplied reference image(s). Preserve the person's identity, face, hairstyle, body proportions and distinctive features. Produce one clear, polished full-body character image with a simple unobtrusive background; do not add text, labels, collage panels, or watermarks.${requirements ? ` Requested details: ${requirements}` : ''}`;
   const output = await generateReferencedImage(prompt, sources.map(assetDataURL), { ...cfg.image.standard, aspect_ratio: priorMetadata.aspect_ratio || '3:2' });
-  const assetID = persistAsset(output.bytes, output.mime, 'character_card');
+  const assetID = await persistImageAsset(output.bytes, 'character_card');
   run("UPDATE character_cards SET output_asset_id=?,status='ready',metadata_status='pending',metadata=?,updated_at=? WHERE id=?", assetID, JSON.stringify({ ...priorMetadata, generated: true, source_count: sources.length }), now(), cardID);
   queue('character_card_analysis', cardID);
   if (!character?.default_card_id) {

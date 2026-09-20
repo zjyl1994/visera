@@ -95,5 +95,7 @@ export const api = {
 	resolveMemoryCandidate: (id: string, action: 'accept' | 'reject') => request<void>(`/memory-candidates/${id}/resolve`, { method: 'POST', body: JSON.stringify({ action }) }),
 }
 
-export const assetURL = (id: string) => `/api/v1/assets/${id}/content`
+// The format marker also avoids reusing an immutable pre-WebP response from an
+// older service-worker cache after the server upgrades a legacy asset.
+export const assetURL = (id: string) => `/api/v1/assets/${id}/content?format=webp`
 export const assetDownloadURL = (id: string) => `/api/v1/assets/${id}/content?download=1`

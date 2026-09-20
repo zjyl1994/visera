@@ -1,6 +1,6 @@
 /* Visera PWA service worker. Keep authenticated JSON and mutations off disk. */
 const SHELL_CACHE = 'visera-shell-v4'
-const IMAGE_CACHE = 'visera-images-v4'
+const IMAGE_CACHE = 'visera-images-v5'
 const MAX_IMAGES = 120
 
 const shellURLs = ['/', '/index.html', '/site.webmanifest', '/favicon.ico', '/icons/icon-192.png', '/icons/icon-512.png']
