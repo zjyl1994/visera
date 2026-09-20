@@ -35,6 +35,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const { headers: requestHeaders, ...requestInit } = init ?? {}
   const response = await fetch(`/api/v1${path}`, {
     ...requestInit,
+    cache: 'no-store',
+    credentials: 'same-origin',
     // Keep the JSON media type when a caller supplies an additional header
     // (for example Idempotency-Key). Previously that header replaced this
     // whole object, leaving Express with an unparsed empty body.
@@ -77,7 +79,7 @@ export const api = {
 	createCard: (characterID: string, sourceAssetIDs: string[], extraRequirements = '', aspectRatio = '3:2') => request<{ id: string }>(`/characters/${characterID}/cards`, { method: 'POST', body: JSON.stringify({ source_asset_ids: sourceAssetIDs, extra_requirements: extraRequirements, aspect_ratio: aspectRatio }) }),
 	retryCard: (characterID: string, cardID: string) => request<{ id: string }>(`/characters/${characterID}/cards/${cardID}/retry`, { method: 'POST' }),
 	previewCard: (characterID: string, baseAssetID: string, originalAssetID: string, requirements: string) => request<{ asset_id: string }>(`/characters/${characterID}/cards/preview`, { method: 'POST', body: JSON.stringify({ base_asset_id: baseAssetID, original_asset_id: originalAssetID, requirements }) }),
-  importCard: (characterID: string, assetID: string) => request<{ id: string }>(`/characters/${characterID}/cards/import`, { method: 'POST', body: JSON.stringify({ asset_id: assetID }) }),
+  importCard: (characterID: string, assetID: string, name?: string) => request<{ id: string }>(`/characters/${characterID}/cards/import`, { method: 'POST', body: JSON.stringify({ asset_id: assetID, name }) }),
   patchSession: (id: string, input: Record<string, string>) => request<void>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   finalizeSession: (id: string, generationID: string) => request<{ status: 'finalized' }>(`/sessions/${id}/finalize`, { method: 'POST', body: JSON.stringify({ generation_id: generationID }) }),
 	getGeneration: (id: string) => request<Generation>(`/generations/${id}`, { cache: 'no-store' }),
@@ -85,7 +87,7 @@ export const api = {
   retryGeneration: (id: string) => request(`/generations/${id}/retry`, { method: 'POST' }),
 	adjustFailedGeneration: (id: string, content: string) => request(`/generations/${id}/adjust`, { method: 'POST', body: JSON.stringify({ content }) }),
 	refineGeneration: (id: string, quality: 'standard' | 'high') => request(`/generations/${id}/refine`, { method: 'POST', body: JSON.stringify({ quality }) }),
-  feedback: (id: string, content: string, quality: 'draft' | 'standard' | 'high' = 'draft', aspectRatio?: string) => request(`/generations/${id}/feedback`, { method: 'POST', body: JSON.stringify({ content, quality, aspect_ratio: aspectRatio }) }),
+  feedback: (id: string, content: string, quality: 'draft' | 'standard' | 'high' = 'draft', aspectRatio?: string, useCharacterCard = true) => request(`/generations/${id}/feedback`, { method: 'POST', body: JSON.stringify({ content, quality, aspect_ratio: aspectRatio, use_character_card: useCharacterCard }) }),
   saveToGallery: (id: string) => request(`/generations/${id}/save-to-gallery`, { method: 'POST' }),
   listGallery: (page = 1, pageSize = 24) => request<{ data: GalleryItem[]; pagination: GalleryPage }>(`/gallery?page=${page}&page_size=${pageSize}`),
 	deleteGalleryItem: (id: string) => request<void>(`/gallery/${id}`, { method: 'DELETE' }),

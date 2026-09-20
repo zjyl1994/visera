@@ -15,7 +15,8 @@ body { min-height: 100dvh; background: var(--ink); }
 .chat-pane { flex: 1; min-width: 0; height: 100dvh; }
 .conversation-list { height: 100dvh; box-sizing: border-box; display: flex; flex-direction: column; padding: 10px 8px; background: var(--base); }
 .list-header { padding: 8px 8px 16px; }
-.brand-avatar { color: var(--ink) !important; font-weight: 800 !important; background: var(--accent) !important; }
+.brand-avatar { overflow: hidden !important; border-radius: 12px !important; color: var(--ink) !important; font-weight: 800 !important; background: transparent !important; }
+.brand-avatar .MuiAvatar-img { object-fit: cover; }
 .session-list { flex: 1; min-height: 0; overflow-y: auto; padding-top: 4px; }
 .session-row { gap: 10px; border-radius: 9px !important; margin: 1px 0; padding: 10px !important; border: 1px solid transparent; }
 .session-row:hover { background: rgba(0, 122, 255, .06) !important; }
@@ -62,12 +63,12 @@ body { min-height: 100dvh; background: var(--ink); }
 .session-card-preview img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; background: var(--ink); transition: transform .18s ease; }
 .session-card-preview:hover img { transform: scale(1.025); }
 .session-card-select { min-height: 44px !important; justify-content: flex-start !important; padding: 5px 6px !important; color: var(--text) !important; font-weight: 700 !important; text-align: left !important; text-transform: none !important; }
-.session-card-preview-dialog { display: grid; min-height: min(68dvh, 620px); place-items: center; padding: clamp(12px, 3vw, 24px) !important; background: var(--ink); }
-.session-card-preview-dialog img { max-width: 100%; max-height: min(68dvh, 620px); object-fit: contain; border-radius: 10px; }
 .session-selection-summary { padding: 10px 12px; border-color: rgba(0,122,255,.34) !important; background: var(--accent-soft) !important; }
 .session-selection-summary img { width: 44px; height: 38px; object-fit: cover; border-radius: 6px; }
 .first-message { text-align: center; margin: 18vh auto; max-width: 360px; }
 .empty-chat { height: 100dvh; padding: 24px; text-align: center; }
+.home-logo { width: 96px !important; height: 96px !important; border-radius: 24px !important; }
+.home-logo .MuiAvatar-img { object-fit: cover; }
 .generation-progress-page { flex: 1; display: grid; place-items: center; overflow-y: auto; padding: 24px; }
 .generation-progress-card { width: min(100%, 580px); padding: clamp(28px, 5vw, 48px); border-color: var(--line) !important; background: var(--panel) !important; box-shadow: none !important; }
 .generation-progress-card h4 { margin: 4px 0 8px; }
@@ -101,6 +102,8 @@ body { min-height: 100dvh; background: var(--ink); }
 .studio-sidebar { border-right: 1px solid var(--line); }
 .identity-card { width: 100%; max-height: 220px; object-fit: cover; border-radius: 10px; display: block; margin: 8px 0 12px; background: var(--ink); }
 .iteration-panel { border-left: 1px solid var(--line); }
+/* The third direct Stack in the active adjustment panel contains retired quick-edit presets. */
+.iteration-panel > .MuiStack-root:nth-of-type(3) { display: none; }
 .canvas-stage { min-width: 0; overflow-y: auto; padding: 28px; text-align: center; background: var(--base); }
 .canvas-toolbar { width: min(100%, 860px); margin: 0 auto 10px; text-align: left; }
 .studio-image { width: min(100%, 860px); max-height: calc(100dvh - 210px); object-fit: contain; display: block; margin: 12px auto 22px; border-radius: 12px; box-shadow: 0 24px 72px var(--shadow), 0 0 0 1px rgba(60,60,67,.14); background: var(--base); }
@@ -146,5 +149,7 @@ body { min-height: 100dvh; background: var(--ink); }
 .MuiDialogActions-root { padding: 12px 20px 16px !important; }
 @media (max-width: 899px) { .app-shell { display: block; } .conversation-list { height: 100dvh; } .chat-header { padding: 0 12px; } .bubble-line { max-width: 92%; } .generation-bubble { width: 100%; } .studio-page { display: block; overflow-y: auto; } .studio-sidebar { display: none; } .canvas-stage, .iteration-panel { padding: 20px 14px; } .studio-image { max-height: 62dvh; } .quality-upgrade { position: sticky; bottom: 0; z-index: 2; align-items: flex-start; flex-direction: column; margin: 0 -14px 18px; padding: 14px; background: var(--base) !important; border-width: 1px 0 !important; } .quality-actions { width: 100%; } .quality-actions .MuiButton-root { flex: 1 1 auto; } .scene-description { grid-template-columns: 1fr; gap: 13px; } .character-library-layout { flex-direction: column !important; } .character-list-panel { width: 100%; flex-basis: auto; } .gallery-page-header { padding: 20px 16px; } .gallery-page-content, .character-library-content { padding: 20px 16px; } .gallery-page-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } .gallery-card-body { padding: 10px; } .gallery-count { display: none; } .character-library-header { align-items: flex-start !important; } .character-library-header > .MuiButton-root { flex: 0 0 auto; min-height: 44px; } .session-character-tabs { display: flex !important; flex-wrap: nowrap !important; overflow-x: auto; padding: 1px 1px 6px; margin: 0 -2px; scrollbar-width: thin; } .session-character-tabs .MuiButton-root { flex: 0 0 auto; min-height: 36px; white-space: nowrap; } .session-character-group { display: none; padding-top: 0; border-top: 0; } .session-character-group.is-mobile-active { display: block; } .session-card-grid { grid-template-columns: 1fr; gap: 16px; } .session-card-option { padding: 10px; } .session-card-preview img { aspect-ratio: 4 / 3; } .session-card-select { min-height: 48px !important; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+.conversation-list { padding-top: calc(10px + env(safe-area-inset-top)); }
+.chat-header { height: calc(64px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); }
 @media (max-width: 899px) { .MuiButton-root { min-height: 44px !important; } .MuiIconButton-root { min-width: 44px !important; min-height: 44px !important; } }
 @media (max-width: 899px) { .character-library-header > .MuiStack-root:first-child { min-width: 0; } .character-library-header > .MuiStack-root:first-child > .MuiBox-root { min-width: 0; } .character-library-header h4 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .character-library-header .MuiTypography-body2 { display: none; } }

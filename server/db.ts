@@ -24,7 +24,7 @@ export function openDatabase(filename: string) {
     CREATE TABLE IF NOT EXISTS character_cards (id TEXT PRIMARY KEY, character_id TEXT, name TEXT, source_asset_ids TEXT, output_asset_id TEXT, prompt_version TEXT, model_name TEXT, status TEXT, is_default INTEGER DEFAULT 0, metadata_status TEXT DEFAULT 'pending', metadata TEXT, created_at INTEGER, updated_at INTEGER);
     CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT, character_id TEXT, active_card_id TEXT, status TEXT DEFAULT 'active', last_message_at INTEGER, last_message_preview TEXT, created_at INTEGER, updated_at INTEGER);
     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, session_id TEXT, role TEXT, kind TEXT, content TEXT, asset_id TEXT, generation_id TEXT, client_request_id TEXT, created_at INTEGER, updated_at INTEGER);
-    CREATE TABLE IF NOT EXISTS generations (id TEXT PRIMARY KEY, session_id TEXT, parent_generation_id TEXT, prompt TEXT, model_name TEXT, quality_preset TEXT, aspect_ratio TEXT, status TEXT, output_asset_id TEXT, error_code TEXT, created_at INTEGER, updated_at INTEGER);
+    CREATE TABLE IF NOT EXISTS generations (id TEXT PRIMARY KEY, session_id TEXT, parent_generation_id TEXT, prompt TEXT, model_name TEXT, quality_preset TEXT, aspect_ratio TEXT, use_character_card INTEGER DEFAULT 1, status TEXT, output_asset_id TEXT, error_code TEXT, created_at INTEGER, updated_at INTEGER);
     CREATE TABLE IF NOT EXISTS session_references (id TEXT PRIMARY KEY, session_id TEXT, asset_id TEXT, purpose TEXT, created_at INTEGER);
     CREATE TABLE IF NOT EXISTS gallery_items (id TEXT PRIMARY KEY, generation_id TEXT UNIQUE, asset_id TEXT, title TEXT, created_at INTEGER);
     CREATE TABLE IF NOT EXISTS gallery_exclusions (generation_id TEXT PRIMARY KEY, created_at INTEGER);
@@ -39,6 +39,8 @@ export function openDatabase(filename: string) {
   // additive so those databases gain the field without a manual migration.
   const cardColumns = client.prepare('PRAGMA table_info(character_cards)').all() as Array<{ name: string }>;
   if (!cardColumns.some(column => column.name === 'name')) client.exec('ALTER TABLE character_cards ADD COLUMN name TEXT');
+  const generationColumns = client.prepare('PRAGMA table_info(generations)').all() as Array<{ name: string }>;
+  if (!generationColumns.some(column => column.name === 'use_character_card')) client.exec('ALTER TABLE generations ADD COLUMN use_character_card INTEGER DEFAULT 1');
   client.exec("UPDATE sessions SET title=COALESCE((SELECT name FROM characters WHERE characters.id=sessions.character_id), '创作') || ' · ' || strftime('%m/%d %H:%M', created_at / 1000, 'unixepoch', 'localtime') WHERE title='新对话'");
   return db;
 }
