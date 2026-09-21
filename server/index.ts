@@ -39,6 +39,7 @@ const generationCount = new Counter({ name: 'visera_generations_total', help: 'I
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 const clients = new Map();
 const id = () => crypto.randomUUID();
+const maxImageBytes = 30 * 1024 * 1024;
 // Route code goes through Drizzle's prepared SQL interface. `statement`
 // safely converts the existing positional-query API while the schema in db.ts
 // supplies the typed table model for new query-builder code.
@@ -50,6 +51,14 @@ const statement = (query: string, args: unknown[]) => {
 const one = (query: string, ...args: unknown[]): any => db.get(statement(query, args)) as any;
 const all = (query: string, ...args: unknown[]): any[] => db.all(statement(query, args)) as any[];
 const run = (query: string, ...args: unknown[]): any => db.run(statement(query, args));
+function runRecovery() {
+  const stamp = now();
+  run("UPDATE generations SET status='queued',updated_at=? WHERE status='running' AND id IN (SELECT resource_id FROM jobs WHERE status='running' AND kind='image_generation')", stamp);
+  run("UPDATE jobs SET status='queued',updated_at=? WHERE status='running'", stamp);
+}
+// A process can exit while a provider request is in flight. There is no worker
+// lease shared outside this process, so reclaim durable jobs when it starts.
+runRecovery();
 const json = value => value == null ? null : JSON.parse(value);
 const fail = (res, status, code, message) => res.status(status).json({ error: { code, message } });
 const optional = value => value || null;
@@ -81,7 +90,7 @@ app.use('/api/v1/auth/login', rateLimit({ windowMs: loginAttemptWindowMs, limit:
 app.use('/api/v1/assets', rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.use('/api/v1/generations', rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
-app.use((req, res, next) => { const end = requestDuration.startTimer(); res.on('finish', () => end({ method: req.method, route: req.route?.path ?? req.path, status: String(res.statusCode) })); next(); });
+app.use((req, res, next) => { const end = requestDuration.startTimer(); res.on('finish', () => end({ method: req.method, route: req.route?.path ?? '<unmatched>', status: String(res.statusCode) })); next(); });
 
 const sessionSecret = cfg.auth.password_hash ?? cfg.auth.password!;
 function token(expires) { const payload = `${cfg.auth.username}.${expires}`; return `${Buffer.from(payload).toString('base64url')}.${crypto.createHmac('sha256', sessionSecret).update(payload).digest('base64url')}`; }
@@ -114,6 +123,13 @@ const CreationPlan = z.object({
   summary: z.string().trim().max(2_000).optional(),
   memory_candidate: z.object({ category: z.string().trim().min(1).max(40), constraint_text: z.string().trim().min(1).max(500), priority: z.enum(['normal', 'high']).default('normal') }).nullable().optional(),
 });
+const AspectRatio = z.enum(['1:1', '2:3', '3:4', '3:2', '4:3', '9:16', '16:9']);
+const MessageInput = z.object({
+  content: z.string().trim().min(1).max(8_000),
+  mode: z.enum(['brief', 'generate']).optional().default('generate'),
+  quality: z.enum(['draft', 'standard', 'high']).optional(),
+  aspect_ratio: AspectRatio.optional(),
+});
 const CharacterCardAnalysis = z.object({
   summary: z.string().trim().min(1).max(500),
   appearance: z.array(z.string().trim().min(1).max(160)).max(12),
@@ -137,7 +153,7 @@ async function analyseCharacterCard(cardID: string) {
   run('UPDATE character_cards SET metadata_status=?,metadata=?,updated_at=? WHERE id=?', 'ready', JSON.stringify({ ...priorMetadata, analysis: analysis.data, analysis_model: cfg.models.text_model, analyzed_at: stamp }), stamp, cardID);
   run('INSERT INTO model_calls(id,kind,resource_id,model_name,cost,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)', id(), 'character_card_analysis', cardID, cfg.models.text_model, Number(usageData.cost || 0), Number(usageData.prompt_tokens || 0), Number(usageData.completion_tokens || 0), Number(usageData.total_tokens || 0), stamp);
 }
-async function planCreation(session: any, request: string) {
+async function planCreation(session: any, request: string, generationID?: string) {
   const memories = session.character_id ? all("SELECT constraint_text FROM character_memories WHERE character_id=? AND status='active' ORDER BY priority DESC, updated_at DESC LIMIT 12", session.character_id).map(row => row.constraint_text) : [];
   const instructions = `You are a precise image-creation assistant. Turn the user's request into one vivid, production-ready image prompt. Keep requested facts; do not invent named people or copyrighted characters. Active character preferences: ${memories.length ? memories.join('；') : 'none'}. Return JSON only: {"prompt":"...","summary":"short Chinese creative brief","memory_candidate":null or {"category":"appearance|style|preference","constraint_text":"a stable character preference explicitly stated by the user","priority":"normal|high"}}. Only propose memory_candidate for enduring character traits/preferences, never for a one-off scene or camera request.`;
   const response = await providerLimiter.schedule(() => openai.chat.completions.create({ model: cfg.models.text_model, temperature: cfg.models.agent_temperature, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: instructions }, { role: 'user', content: request }] } as any, { timeout: cfg.timeouts.model_ms }));
@@ -145,7 +161,7 @@ async function planCreation(session: any, request: string) {
   const parsed = CreationPlan.safeParse(JSON.parse(raw));
   if (!parsed.success) throw new Error('文本模型没有返回有效的创作简报');
   const stamp = now(), usageData: any = response.usage ?? {};
-  run('INSERT INTO model_calls(id,kind,resource_id,model_name,cost,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)', id(), 'creation_planning', session.id, cfg.models.text_model, Number(usageData.cost || 0), Number(usageData.prompt_tokens || 0), Number(usageData.completion_tokens || 0), Number(usageData.total_tokens || 0), stamp);
+  run('INSERT INTO model_calls(id,kind,resource_id,model_name,cost,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)', id(), 'creation_planning', generationID ?? session.id, cfg.models.text_model, Number(usageData.cost || 0), Number(usageData.prompt_tokens || 0), Number(usageData.completion_tokens || 0), Number(usageData.total_tokens || 0), stamp);
   return parsed.data;
 }
 function saveMemoryCandidate(characterID: string | null | undefined, candidate: z.infer<typeof CreationPlan>['memory_candidate']) {
@@ -157,11 +173,11 @@ function saveMemoryCandidate(characterID: string | null | undefined, candidate: 
 }
 
 app.get('/api/v1/health', (_req, res) => res.json({ status: 'ok' }));
-app.get('/metrics', async (_req, res) => { res.type(metrics.contentType); res.send(await metrics.metrics()); });
 app.post('/api/v1/auth/login', async (req, res, next) => { try { const ip = clientIP(req); const parsed = z.object({ username: z.string().min(1), password: z.string().min(1), remember: z.boolean().optional().default(false) }).safeParse(req.body); if (!parsed.success) return fail(res, 400, 'INVALID_LOGIN', '请输入账户和密码'); const { username, password, remember } = parsed.data; const passwordOK = cfg.auth.password_hash ? await verifyArgon2(cfg.auth.password_hash, password) : password === cfg.auth.password; if (username !== cfg.auth.username || !passwordOK) { const banUntil = recordLoginFailure(ip); return banUntil ? fail(res, 429, 'IP_BANNED', '登录失败次数过多，该 IP 已被封禁 24 小时') : fail(res, 401, 'INVALID_CREDENTIALS', '账户或密码不正确'); } clearLoginFailures(ip); const expiry = now() + (remember ? 30 : 1) * 86400000; res.cookie('visera_session', token(expiry), { httpOnly: true, sameSite: 'lax', secure: req.secure, ...(remember ? { maxAge: 30 * 86400000 } : {}) }); res.json({ authenticated: true, remembered: remember }); } catch (error) { next(error); } });
 app.get('/api/v1/auth/session', (req, res) => res.json({ authenticated: authenticated(req) }));
 app.post('/api/v1/auth/logout', (_req, res) => { res.clearCookie('visera_session'); res.status(204).end(); });
 app.use('/api/v1', auth);
+app.get('/metrics', auth, async (_req, res) => { res.type(metrics.contentType); res.send(await metrics.metrics()); });
 
 app.post('/api/v1/assets', upload.single('file'), async (req, res) => {
   if (!req.file?.buffer) return fail(res, 400, 'INVALID_FILE', '请选择文件');
@@ -190,7 +206,7 @@ function assetDataURL(asset: any) {
 async function toWebP(bytes: Buffer) {
   // The provider may ignore output_format for a particular model. Re-encoding
   // here keeps every persisted image consistent regardless of that behavior.
-  return sharp(bytes, { animated: false, failOn: 'none' }).rotate().webp({ quality: 90, effort: 4 }).toBuffer();
+  return sharp(bytes, { animated: false, failOn: 'none', limitInputPixels: 40_000_000 }).rotate().webp({ quality: 90, effort: 4 }).toBuffer();
 }
 async function persistImageAsset(input: Buffer, kind: string) {
   const bytes = await toWebP(input);
@@ -228,11 +244,18 @@ async function generateReferencedImage(prompt: string, references: string[], pre
   let mime = image.media_type || 'image/png';
   if (image.b64_json) bytes = Buffer.from(image.b64_json, 'base64');
   else if (image.url) {
-    const downloaded = await fetch(image.url, { signal: AbortSignal.timeout(cfg.timeouts.image_ms) });
+    let imageURL: URL;
+    try { imageURL = new URL(image.url); } catch { throw new Error('图像服务返回了无效的下载地址'); }
+    if (imageURL.protocol !== 'https:' || imageURL.username || imageURL.password) throw new Error('图像服务返回了不安全的下载地址');
+    const downloaded = await fetch(imageURL, { signal: AbortSignal.timeout(cfg.timeouts.image_ms), redirect: 'error' });
     if (!downloaded.ok) throw new Error('图像服务返回的文件无法下载');
+    const size = Number(downloaded.headers.get('content-length') || 0);
+    if (size > maxImageBytes) throw new Error('图像服务返回的文件过大');
     mime = downloaded.headers.get('content-type') || mime;
     bytes = Buffer.from(await downloaded.arrayBuffer());
+    if (bytes.length > maxImageBytes) throw new Error('图像服务返回的文件过大');
   } else throw new Error('图像服务没有返回图片内容');
+  if (bytes.length > maxImageBytes) throw new Error('图像服务返回的文件过大');
   return { bytes, mime, requestID: body.id || body.request_id || id(), usage: body.usage ?? {} };
 }
 
@@ -292,22 +315,25 @@ app.post('/api/v1/sessions/:id/messages', async (req, res, next) => {
   try {
     const session = one("SELECT * FROM sessions WHERE id=? AND status='active'", req.params.id);
     if (!session) return fail(res, 404, 'NOT_FOUND', '会话不存在或已结束');
-    const content = String(req.body?.content ?? '').trim(), mode = req.body?.mode ?? 'generate', quality = preset(req.body?.quality), requestID = req.headers['idempotency-key'];
-    if (!content) return fail(res, 400, 'INVALID_MESSAGE', '请输入内容');
+    const input = MessageInput.safeParse(req.body);
+    if (!input.success) return fail(res, 400, 'INVALID_MESSAGE', '请输入不超过 8000 个字符的内容，并选择有效的画面比例');
+    const requestID = req.get('Idempotency-Key');
+    if (requestID && !z.string().uuid().safeParse(requestID).success) return fail(res, 400, 'INVALID_IDEMPOTENCY_KEY', '请求标识无效');
+    const { content, mode, aspect_ratio } = input.data, quality = preset(input.data.quality);
     if (requestID) { const existing = one('SELECT id FROM messages WHERE session_id=? AND client_request_id=?', session.id, requestID); if (existing) return res.status(202).json({ message_id: existing.id, duplicate: true }); }
     addMessage(session.id, 'user', 'text', { text: content }, { client_request_id: requestID });
     emit(session.id, 'message.created', { role: 'user' });
     // Planning is helpful but never makes an image request unusable when a
     // provider has no text model or is temporarily unavailable.
     let plan: z.infer<typeof CreationPlan> = { prompt: content, summary: '已按你的描述准备创作。' };
-    try { plan = await planCreation(session, content); }
+    const generationID = mode === 'generate' ? id() : undefined;
+    try { plan = await planCreation(session, content, generationID); }
     catch (error) { logger.warn({ err: error, sessionID: session.id }, 'creation planning unavailable; using the original prompt'); }
     const planID = addMessage(session.id, 'assistant', 'plan', { stage: mode === 'brief' ? '确认后的创作简报' : '最终绘图提示词', text: mode === 'brief' ? (plan.summary || plan.prompt) : plan.prompt });
     emit(session.id, 'assistant.plan', { message_id: planID });
     saveMemoryCandidate(session.character_id, plan.memory_candidate);
     if (mode === 'brief') return res.status(202).json({ status: 'planned' });
-    const generationID = createGeneration(session.id, plan.prompt, null, quality, req.body?.aspect_ratio);
-    res.status(202).json({ generation_id: generationID });
+    res.status(202).json({ generation_id: createGeneration(session.id, plan.prompt, null, quality, aspect_ratio, true, generationID) });
   } catch (error) { next(error); }
 });
 function saveGenerationToGallery(generation: any, restore = true) {
@@ -331,22 +357,22 @@ app.delete('/api/v1/sessions/:id/references/:referenceID', (req, res) => { run('
 app.get('/api/v1/sessions/:id/events', (req, res) => { res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }); res.write(': connected\n\n'); const set = clients.get(req.params.id) ?? new Set(); set.add(res); clients.set(req.params.id, set); req.on('close', () => { set.delete(res); if (!set.size) clients.delete(req.params.id); }); });
 
 function preset(value) { return ['draft', 'standard', 'high'].includes(value) ? value : cfg.image.default_preset; }
-function createGeneration(sessionID, prompt, parentID, quality, ratio, useCharacterCard = true) { const generationID = id(), stamp = now(), aspectRatio = ratio || (cfg.image as any)[quality].aspect_ratio; const dailyCount = Number(one('SELECT count(*) AS count FROM generations WHERE created_at>=?', stamp - 86_400_000)?.count ?? 0); if (dailyCount >= cfg.limits.max_daily_generations) { const error: any = new Error(`今日生成次数已达到上限（${cfg.limits.max_daily_generations} 次）`); error.status = 429; error.code = 'DAILY_GENERATION_LIMIT'; throw error; } run('INSERT INTO generations(id,session_id,parent_generation_id,prompt,model_name,quality_preset,aspect_ratio,use_character_card,status,output_asset_id,error_code,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', generationID, sessionID, parentID, prompt, cfg.models.image_model, quality, aspectRatio, useCharacterCard ? 1 : 0, 'queued', null, null, stamp, stamp); addMessage(sessionID, 'assistant', 'generation', { generation_id: generationID, status: 'queued', aspect_ratio: aspectRatio }, { generation_id: generationID }); queue('image_generation', generationID); emit(sessionID, 'generation.progress', { generation_id: generationID, status: 'queued' }); return generationID; }
-app.get('/api/v1/generations/:id', (req, res) => { const generation = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!generation) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); res.set('Cache-Control', 'no-store'); res.json({ ...generation, usage: usage(generation.id, generation.session_id) }); });
-app.post('/api/v1/generations/:id/retry', (req, res) => { const generation = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!generation) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); run("UPDATE generations SET status='queued',error_code=NULL,updated_at=? WHERE id=?", now(), generation.id); queue('image_generation', generation.id); res.status(202).json({ id: generation.id }); });
-app.post('/api/v1/generations/:id/adjust', (req, res) => { const source = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!source) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); const newID = createGeneration(source.session_id, `${source.prompt}\n${String(req.body?.content ?? '')}`, source.id, source.quality_preset, source.aspect_ratio, Number(source.use_character_card) !== 0); res.status(202).json({ generation_id: newID }); });
+function createGeneration(sessionID, prompt, parentID, quality, ratio, useCharacterCard = true, generationID = id()) { const stamp = now(), aspectRatio = ratio || (cfg.image as any)[quality].aspect_ratio; const dailyCount = Number(one('SELECT count(*) AS count FROM generations WHERE created_at>=?', stamp - 86_400_000)?.count ?? 0); if (dailyCount >= cfg.limits.max_daily_generations) { const error: any = new Error(`今日生成次数已达到上限（${cfg.limits.max_daily_generations} 次）`); error.status = 429; error.code = 'DAILY_GENERATION_LIMIT'; throw error; } run('INSERT INTO generations(id,session_id,parent_generation_id,prompt,model_name,quality_preset,aspect_ratio,use_character_card,status,output_asset_id,error_code,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', generationID, sessionID, parentID, prompt, cfg.models.image_model, quality, aspectRatio, useCharacterCard ? 1 : 0, 'queued', null, null, stamp, stamp); addMessage(sessionID, 'assistant', 'generation', { generation_id: generationID, status: 'queued', aspect_ratio: aspectRatio }, { generation_id: generationID }); queue('image_generation', generationID); emit(sessionID, 'generation.progress', { generation_id: generationID, status: 'queued' }); return generationID; }
+app.get('/api/v1/generations/:id', (req, res) => { const generation = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!generation) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); res.set('Cache-Control', 'no-store'); res.json({ ...generation, usage: usage(generation.id) }); });
+app.post('/api/v1/generations/:id/retry', (req, res) => { const generation = one("SELECT * FROM generations WHERE id=? AND status='failed'", req.params.id); if (!generation) return fail(res, 409, 'NOT_RETRYABLE', '只能重试失败的生成任务'); const result = run("UPDATE generations SET status='queued',error_code=NULL,updated_at=? WHERE id=? AND status='failed'", now(), generation.id); if (result.changes !== 1) return fail(res, 409, 'NOT_RETRYABLE', '该任务已经被重试'); queue('image_generation', generation.id); res.status(202).json({ id: generation.id }); });
+app.post('/api/v1/generations/:id/adjust', (req, res) => { const source = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!source) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); const input = z.object({ content: z.string().trim().min(1).max(2_000) }).safeParse(req.body); if (!input.success) return fail(res, 400, 'INVALID_ADJUSTMENT', '请输入不超过 2000 个字符的调整内容'); const newID = createGeneration(source.session_id, `${source.prompt}\n${input.data.content}`, source.id, source.quality_preset, source.aspect_ratio, Number(source.use_character_card) !== 0); res.status(202).json({ generation_id: newID }); });
 app.post('/api/v1/generations/:id/refine', (req, res) => { const source = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!source) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); const newID = createGeneration(source.session_id, source.prompt, source.id, preset(req.body?.quality), source.aspect_ratio, Number(source.use_character_card) !== 0); res.status(202).json({ generation_id: newID }); });
-app.post('/api/v1/generations/:id/feedback', (req, res) => { const source = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!source) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); const input = z.object({ content: z.string().trim().min(1), quality: z.string().optional(), aspect_ratio: z.string().optional(), use_character_card: z.boolean().optional().default(true) }).safeParse(req.body); if (!input.success) return fail(res, 400, 'INVALID_FEEDBACK', '请输入修改意见'); addMessage(source.session_id, 'user', 'feedback', { text: input.data.content }); const newID = createGeneration(source.session_id, `${source.prompt}\nRevision: ${input.data.content}`, source.id, preset(input.data.quality), input.data.aspect_ratio || source.aspect_ratio, input.data.use_character_card); res.status(202).json({ generation_id: newID }); });
+app.post('/api/v1/generations/:id/feedback', (req, res) => { const source = one('SELECT * FROM generations WHERE id=?', req.params.id); if (!source) return fail(res, 404, 'NOT_FOUND', '生成任务不存在'); const input = z.object({ content: z.string().trim().min(1).max(2_000), quality: z.enum(['draft', 'standard', 'high']).optional(), aspect_ratio: AspectRatio.optional(), use_character_card: z.boolean().optional().default(true) }).safeParse(req.body); if (!input.success) return fail(res, 400, 'INVALID_FEEDBACK', '请输入不超过 2000 个字符的修改意见'); addMessage(source.session_id, 'user', 'feedback', { text: input.data.content }); const newID = createGeneration(source.session_id, `${source.prompt}\nRevision: ${input.data.content}`, source.id, preset(input.data.quality), input.data.aspect_ratio || source.aspect_ratio, input.data.use_character_card); res.status(202).json({ generation_id: newID }); });
 app.get('/api/v1/image-capabilities', (_req, res) => res.json({ model: cfg.models.image_model, aspect_ratios: ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9'], source: 'fallback' }));
 app.post('/api/v1/generations/:id/save-to-gallery', (req, res) => { const generation = one("SELECT * FROM generations WHERE id=? AND status='succeeded'", req.params.id); if (!generation) return fail(res, 409, 'NOT_READY', '图片尚未生成完成'); const existing = one('SELECT * FROM gallery_items WHERE generation_id=?', generation.id); if (existing) return res.json(existing); res.status(201).json({ id: saveGenerationToGallery(generation) }); });
-app.get('/api/v1/gallery', (req, res) => { backfillFinalizedGallery(); const page = Math.max(1, Number(req.query.page) || 1), pageSize = Math.min(100, Math.max(1, Number(req.query.page_size) || 24)), total = one('SELECT count(*) AS count FROM gallery_items').count; const rows = all('SELECT gi.*, g.session_id FROM gallery_items gi LEFT JOIN generations g ON g.id=gi.generation_id ORDER BY gi.created_at DESC LIMIT ? OFFSET ?', pageSize, (page - 1) * pageSize); res.json({ data: rows.map(item => { const detail = item.session_id ? usage(item.generation_id, item.session_id) : { recorded: false, cost: 0, image_cost: 0, llm_cost: 0, image_calls: 0, llm_calls: 0 }; return { ...item, cost_recorded: detail.recorded, cost: detail.cost, image_cost: detail.image_cost, llm_cost: detail.llm_cost, image_calls: detail.image_calls, llm_calls: detail.llm_calls }; }), pagination: { page, page_size: pageSize, total, total_pages: Math.ceil(total / pageSize) } }); });
+app.get('/api/v1/gallery', (req, res) => { const query = z.object({ page: z.coerce.number().int().positive().optional().default(1), page_size: z.coerce.number().int().min(1).max(100).optional().default(24) }).safeParse(req.query); if (!query.success) return fail(res, 400, 'INVALID_PAGINATION', '分页参数无效'); backfillFinalizedGallery(); const { page, page_size: pageSize } = query.data, total = one('SELECT count(*) AS count FROM gallery_items').count; const rows = all('SELECT gi.*, g.session_id FROM gallery_items gi LEFT JOIN generations g ON g.id=gi.generation_id ORDER BY gi.created_at DESC LIMIT ? OFFSET ?', pageSize, (page - 1) * pageSize); res.json({ data: rows.map(item => { const detail = item.session_id ? usage(item.generation_id) : { recorded: false, cost: 0, image_cost: 0, llm_cost: 0, image_calls: 0, llm_calls: 0 }; return { ...item, cost_recorded: detail.recorded, cost: detail.cost, image_cost: detail.image_cost, llm_cost: detail.llm_cost, image_calls: detail.image_calls, llm_calls: detail.llm_calls }; }), pagination: { page, page_size: pageSize, total, total_pages: Math.ceil(total / pageSize) } }); });
 app.delete('/api/v1/gallery/:id', (req, res) => { const item = one('SELECT generation_id FROM gallery_items WHERE id=?', req.params.id); if (item?.generation_id) run('INSERT OR REPLACE INTO gallery_exclusions(generation_id,created_at) VALUES(?,?)', item.generation_id, now()); run('DELETE FROM gallery_items WHERE id=?', req.params.id); res.status(204).end(); });
 app.get('/api/v1/characters/:id/memories', (req, res) => res.json({ data: all("SELECT * FROM character_memories WHERE character_id=? AND status='active' ORDER BY updated_at DESC", req.params.id) }));
 app.get('/api/v1/characters/:id/memory-candidates', (req, res) => res.json({ data: all("SELECT * FROM memory_candidates WHERE character_id=? AND status='pending' ORDER BY created_at DESC", req.params.id) }));
 app.post('/api/v1/memory-candidates/:id/resolve', (req, res) => { const candidate = one("SELECT * FROM memory_candidates WHERE id=? AND status='pending'", req.params.id); if (!candidate) return fail(res, 404, 'NOT_FOUND', '记忆建议不存在'); const action = req.body?.action; if (!['accept', 'reject'].includes(action)) return fail(res, 400, 'INVALID_ACTION', '操作无效'); const stamp = now(); run('UPDATE memory_candidates SET status=?,updated_at=? WHERE id=?', action === 'accept' ? 'accepted' : 'rejected', stamp, candidate.id); if (action === 'accept') run('INSERT INTO character_memories(id,character_id,category,constraint_text,normalized_key,priority,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)', id(), candidate.character_id, candidate.category, candidate.constraint_text, candidate.constraint_text.toLowerCase(), candidate.priority, 'active', stamp, stamp); res.status(204).end(); });
 app.get('/api/v1/errors', (_req, res) => res.json({ data: all('SELECT * FROM error_logs ORDER BY created_at DESC LIMIT 100') }));
 
-function usage(generationID, sessionID) { const lines = all('SELECT * FROM model_calls WHERE resource_id IN (?,?) ORDER BY created_at DESC', generationID, sessionID); const image = lines.filter(x => x.kind === 'image_generation'), llm = lines.filter(x => x.kind !== 'image_generation'); const sum = rows => rows.reduce((n, x) => n + x.cost, 0); return { recorded: !!lines.length, cost: sum(lines), total_cost: sum(lines), image_cost: sum(image), image_calls: image.length, image_calls_detail: image, llm_cost: sum(llm), llm_calls: llm.length, llm_calls_detail: llm, current_image_cost: sum(image), current_image_recorded: !!image.length, prompt_tokens: lines.reduce((n,x) => n+x.prompt_tokens,0), completion_tokens: lines.reduce((n,x) => n+x.completion_tokens,0), total_tokens: lines.reduce((n,x) => n+x.total_tokens,0) }; }
+function usage(generationID) { const lines = all('SELECT * FROM model_calls WHERE resource_id=? ORDER BY created_at DESC', generationID); const image = lines.filter(x => x.kind === 'image_generation'), llm = lines.filter(x => x.kind !== 'image_generation'); const sum = rows => rows.reduce((n, x) => n + x.cost, 0); return { recorded: !!lines.length, cost: sum(lines), total_cost: sum(lines), image_cost: sum(image), image_calls: image.length, image_calls_detail: image, llm_cost: sum(llm), llm_calls: llm.length, llm_calls_detail: llm, current_image_cost: sum(image), current_image_recorded: !!image.length, prompt_tokens: lines.reduce((n,x) => n+x.prompt_tokens,0), completion_tokens: lines.reduce((n,x) => n+x.completion_tokens,0), total_tokens: lines.reduce((n,x) => n+x.total_tokens,0) }; }
 function generationReferences(generation: any) {
   const assetIDs: string[] = [];
   if (generation.parent_generation_id) {
@@ -383,7 +409,7 @@ async function providerImage(generation) {
   const presetConfig = { ...((cfg.image as any)[generation.quality_preset] ?? cfg.image.draft), aspect_ratio: generation.aspect_ratio };
   return generateReferencedImage(`${generation.prompt}${characterConsistencyPrompt(generation)}`, generationReferences(generation), presetConfig);
 }
-async function processJobs() { const job = one("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1"); if (!job) return; run("UPDATE jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=?", now(), job.id); try { if (job.kind === 'image_generation') await generate(job.resource_id); else if (job.kind === 'character_card') await card(job.resource_id); else if (job.kind === 'character_card_analysis') await analyseCharacterCard(job.resource_id); run("UPDATE jobs SET status='succeeded',updated_at=? WHERE id=?", now(), job.id); } catch (error) { const attempts = job.attempts + 1, retry = attempts < job.max_attempts; run('UPDATE jobs SET status=?,attempts=?,updated_at=? WHERE id=?', retry ? 'queued' : 'failed', attempts, now(), job.id); run('INSERT INTO error_logs(id,kind,resource_id,code,message,created_at) VALUES(?,?,?,?,?,?)', id(), job.kind, job.resource_id, 'JOB_FAILED', String(error.message).slice(0, 600), now()); if (job.kind === 'image_generation' && !retry) { const generation = one('SELECT * FROM generations WHERE id=?', job.resource_id); run("UPDATE generations SET status='failed',error_code=?,updated_at=? WHERE id=?", 'GENERATION_FAILED', now(), job.resource_id); generationCount.inc({ status: 'failed' }); emit(generation.session_id, 'generation.failed', { generation_id: generation.id, status: 'failed' }); } if (job.kind === 'character_card' && !retry) run("UPDATE character_cards SET status='failed',metadata_status='failed',updated_at=? WHERE id=?", now(), job.resource_id); if (job.kind === 'character_card_analysis' && !retry) run("UPDATE character_cards SET metadata_status='failed',updated_at=? WHERE id=?", now(), job.resource_id); } }
+async function processJobs() { const job = one("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 1"); if (!job) return; const claim = run("UPDATE jobs SET status='running',attempts=attempts+1,updated_at=? WHERE id=? AND status='queued'", now(), job.id); if (claim.changes !== 1) return; try { if (job.kind === 'image_generation') await generate(job.resource_id); else if (job.kind === 'character_card') await card(job.resource_id); else if (job.kind === 'character_card_analysis') await analyseCharacterCard(job.resource_id); run("UPDATE jobs SET status='succeeded',updated_at=? WHERE id=?", now(), job.id); } catch (error) { const attempts = job.attempts + 1, retry = attempts < job.max_attempts; run('UPDATE jobs SET status=?,attempts=?,updated_at=? WHERE id=?', retry ? 'queued' : 'failed', attempts, now(), job.id); run('INSERT INTO error_logs(id,kind,resource_id,code,message,created_at) VALUES(?,?,?,?,?,?)', id(), job.kind, job.resource_id, 'JOB_FAILED', String(error.message).slice(0, 600), now()); if (job.kind === 'image_generation' && !retry) { const generation = one('SELECT * FROM generations WHERE id=?', job.resource_id); run("UPDATE generations SET status='failed',error_code=?,updated_at=? WHERE id=?", 'GENERATION_FAILED', now(), job.resource_id); generationCount.inc({ status: 'failed' }); emit(generation.session_id, 'generation.failed', { generation_id: generation.id, status: 'failed' }); } if (job.kind === 'character_card' && !retry) run("UPDATE character_cards SET status='failed',metadata_status='failed',updated_at=? WHERE id=?", now(), job.resource_id); if (job.kind === 'character_card_analysis' && !retry) run("UPDATE character_cards SET metadata_status='failed',updated_at=? WHERE id=?", now(), job.resource_id); } }
 async function generate(generationID) { const generation = one('SELECT * FROM generations WHERE id=?', generationID); if (!generation) throw new Error('generation missing'); run("UPDATE generations SET status='running',updated_at=? WHERE id=?", now(), generationID); emit(generation.session_id, 'generation.progress', { generation_id: generationID, status: 'running' }); const output = await providerImage(generation); const assetID = await persistImageAsset(output.bytes, 'generated_image'); const stamp = now(); run("UPDATE generations SET status='succeeded',output_asset_id=?,updated_at=? WHERE id=?", assetID, stamp, generationID); run('UPDATE messages SET content=?,asset_id=?,updated_at=? WHERE generation_id=?', JSON.stringify({ generation_id: generationID, asset_id: assetID, aspect_ratio: generation.aspect_ratio, status: 'succeeded' }), assetID, stamp, generationID); const usageData = output.usage; run('INSERT INTO model_calls(id,kind,resource_id,model_name,cost,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)', id(), 'image_generation', generationID, generation.model_name, Number(usageData.cost || 0), 0, 0, 0, stamp); generationCount.inc({ status: 'succeeded' }); emit(generation.session_id, 'generation.completed', { generation_id: generationID, asset_id: assetID, status: 'succeeded' }); }
 async function card(cardID) {
   const value = one('SELECT * FROM character_cards WHERE id=?', cardID);

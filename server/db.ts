@@ -34,6 +34,10 @@ export function openDatabase(filename: string) {
     CREATE TABLE IF NOT EXISTS error_logs (id TEXT PRIMARY KEY, kind TEXT, resource_id TEXT, code TEXT, message TEXT, created_at INTEGER);
     CREATE TABLE IF NOT EXISTS model_calls (id TEXT PRIMARY KEY, kind TEXT, resource_id TEXT, model_name TEXT, cost REAL DEFAULT 0, prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0, total_tokens INTEGER DEFAULT 0, created_at INTEGER);
     CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT PRIMARY KEY, failed_count INTEGER NOT NULL, last_attempt_at INTEGER NOT NULL, ban_until INTEGER);
+    CREATE INDEX IF NOT EXISTS jobs_queued_idx ON jobs(status, created_at);
+    CREATE INDEX IF NOT EXISTS messages_session_created_idx ON messages(session_id, created_at);
+    CREATE INDEX IF NOT EXISTS generations_session_status_idx ON generations(session_id, status);
+    CREATE INDEX IF NOT EXISTS model_calls_resource_idx ON model_calls(resource_id);
   `);
   // Existing installations predate card names. Keep the bootstrap schema
   // additive so those databases gain the field without a manual migration.

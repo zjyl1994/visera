@@ -1,12 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import Lightbox from 'yet-another-react-lightbox'
-import Captions from 'yet-another-react-lightbox/plugins/captions'
-import DownloadPlugin from 'yet-another-react-lightbox/plugins/download'
-import Zoom from 'yet-another-react-lightbox/plugins/zoom'
-import 'yet-another-react-lightbox/styles.css'
-import 'yet-another-react-lightbox/plugins/captions.css'
 import {
 	Add, ArrowBack, Bookmark, BookmarkBorder, Collections, DeleteOutline, Download, EditOutlined, Face, ImageOutlined, MoreVert, Refresh, Send, StarBorder,
 } from '@mui/icons-material'
@@ -20,8 +14,10 @@ import { api, assetDownloadURL, assetURL, type Character, type CharacterCard, ty
 
 type ObjectContent = Record<string, unknown>
 
+const LazyImageLightbox = lazy(() => import('./ImageLightbox'))
+
 function ImageLightbox({ open, onClose, src, alt, downloadURL, title, description }: { open: boolean; onClose: () => void; src: string; alt: string; downloadURL?: string; title?: string; description?: string }) {
-  return <Lightbox open={open} close={onClose} slides={[{ src, alt, download: downloadURL, title, description }]} plugins={[Zoom, DownloadPlugin, Captions]} carousel={{ finite: true }} controller={{ closeOnBackdropClick: true }} />
+  return open ? <Suspense fallback={null}><LazyImageLightbox open={open} onClose={onClose} src={src} alt={alt} downloadURL={downloadURL} title={title} description={description} /></Suspense> : null
 }
 
 function AssetImage({ assetID, alt, className, loading = 'lazy', width, height, style, aspectRatio = '3 / 2', imageClassName, onClick, onKeyDown, interactive = false }: { assetID: string; alt: string; className?: string; loading?: 'eager' | 'lazy'; width?: string | number; height?: string | number; style?: CSSProperties; aspectRatio?: string; imageClassName?: string; onClick?: (event: MouseEvent<HTMLImageElement>) => void; onKeyDown?: (event: KeyboardEvent<HTMLImageElement>) => void; interactive?: boolean }) {
